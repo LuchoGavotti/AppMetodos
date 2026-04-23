@@ -12,6 +12,7 @@ import {
   LineChart,
   AreaChart,
   Dices,
+  Route,
 } from "lucide-react";
 
 export type MethodId =
@@ -22,7 +23,8 @@ export type MethodId =
   | "interpolation"
   | "derivative"
   | "integration"
-  | "monte-carlo";
+  | "monte-carlo"
+  | "differential-equation";
 
 interface Method {
   id: MethodId;
@@ -88,6 +90,13 @@ const methods: Method[] = [
     shortName: "Monte Carlo",
     icon: Dices,
     colorClass: "method-monte-carlo",
+  },
+  {
+    id: "differential-equation",
+    name: "Ecuaciones Diferenciales",
+    shortName: "EDO",
+    icon: Route,
+    colorClass: "method-differential-equation",
   },
 ];
 

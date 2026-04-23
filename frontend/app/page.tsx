@@ -11,6 +11,7 @@ import { NewtonRaphsonMethod } from "@/components/methods/newton-raphson-method"
 import { InterpolationMethod } from "@/components/methods/interpolation-method";
 import { DerivativeMethod } from "@/components/methods/derivative-method";
 import { MonteCarloMethod } from "@/components/methods/monte-carlo-method";
+import { DifferentialEquationMethod } from "@/components/methods/differential-equation-method";
 
 export default function HomePage() {
   const [activeMethod, setActiveMethod] = React.useState<MethodId>("integration");
@@ -28,6 +29,7 @@ export default function HomePage() {
         {activeMethod === "interpolation" && <InterpolationMethod />}
         {activeMethod === "derivative" && <DerivativeMethod />}
         {activeMethod === "monte-carlo" && <MonteCarloMethod />}
+        {activeMethod === "differential-equation" && <DifferentialEquationMethod />}
       </main>
     </div>
   );

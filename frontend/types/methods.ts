@@ -273,6 +273,66 @@ export interface MonteCarloResponse {
   sample_points: MonteCarloSamplePoint[];
 }
 
+export interface DifferentialEquationRequest {
+  equation: string;
+  x0: number;
+  y0: number;
+  x_min: number;
+  x_max: number;
+  h: number;
+  method: "euler" | "improved_euler" | "runge_kutta";
+}
+
+export interface DifferentialEquationPoint {
+  x: number;
+  y: number;
+}
+
+export interface DifferentialEquationIteration {
+  iteration: number;
+  direction: "forward" | "backward";
+  x_i: number;
+  y_i: number;
+  x_next: number;
+  y_next: number;
+  h_step: number;
+  slope: number;
+  k1: number;
+  k2: number | null;
+  k3: number | null;
+  k4: number | null;
+}
+
+export interface DifferentialEquationAnalyticStep {
+  title: string;
+  description: string;
+  latex?: string | null;
+}
+
+export interface DifferentialEquationAnalyticSolution {
+  available: boolean;
+  hint?: string | null;
+  solved_with_ics?: boolean;
+  satisfies_initial_condition?: boolean | null;
+  solution_latex: string;
+  solution_expr_latex: string;
+  steps: DifferentialEquationAnalyticStep[];
+}
+
+export interface DifferentialEquationResponse {
+  equation: string;
+  equation_latex: string;
+  method: "euler" | "improved_euler" | "runge_kutta";
+  x0: number;
+  y0: number;
+  x_min: number;
+  x_max: number;
+  h: number;
+  points: DifferentialEquationPoint[];
+  iterations: DifferentialEquationIteration[];
+  analytic_solution?: DifferentialEquationAnalyticSolution | null;
+}
+
 export interface APIError {
   detail:
     | string

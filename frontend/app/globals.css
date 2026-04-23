@@ -138,6 +138,9 @@
 .method-monte-carlo {
   --method-color: hsl(160 84% 39%);
 }
+.method-differential-equation {
+  --method-color: hsl(218 84% 55%);
+}
 
 /* KaTeX styling for dark mode */
 .dark .katex {

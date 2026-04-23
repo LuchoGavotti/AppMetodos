@@ -32,6 +32,13 @@ interface MathGraphProps {
     color?: string;
     label?: string;
   }>;
+  segments?: Array<{
+    x1: number;
+    y1: number;
+    x2: number;
+    y2: number;
+    color?: string;
+  }>;
   rectangles?: Array<{
     x1: number;
     x2: number;
@@ -82,6 +89,7 @@ export function MathGraph({
   functions = [],
   points = [],
   lines = [],
+  segments = [],
   rectangles = [],
   trapezoids = [],
   viewBox = { x: [-10, 10], y: [-10, 10] },
@@ -90,7 +98,6 @@ export function MathGraph({
   className,
 }: MathGraphProps) {
   const [mounted, setMounted] = React.useState(false);
-  const [mousePos, setMousePos] = React.useState<{ x: number; y: number } | null>(null);
   const [mafsKey, setMafsKey] = React.useState(0);
 
   React.useEffect(() => {
@@ -219,6 +226,17 @@ export function MathGraph({
           />
         ))}
 
+        {/* Render line segments (for piecewise point connections) */}
+        {segments.map((segment, i) => (
+          <Line.Segment
+            key={`segment-${i}`}
+            point1={[segment.x1, segment.y1]}
+            point2={[segment.x2, segment.y2]}
+            color={segment.color || "#2563eb"}
+            opacity={0.75}
+          />
+        ))}
+
         {/* Render points */}
         {points.map((pt, i) => (
           <Point
@@ -235,11 +253,6 @@ export function MathGraph({
         )}
       </Mafs>
 
-      {mousePos && (
-        <div className="coordinate-display">
-          x: {mousePos.x.toFixed(4)}, y: {mousePos.y.toFixed(4)}
-        </div>
-      )}
       <Button
         type="button"
         variant="secondary"

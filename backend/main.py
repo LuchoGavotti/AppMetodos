@@ -78,6 +78,16 @@ class MonteCarloRequest(BaseModel):
     max_points_to_return: int = Field(default=2000, ge=100, le=10000)
 
 
+class DifferentialEquationRequest(BaseModel):
+    equation: str = Field(..., description="Differential equation y' = f(x, y)")
+    x0: float = Field(..., description="Initial x value")
+    y0: float = Field(..., description="Initial y value")
+    x_min: float = Field(..., description="Lower x bound")
+    x_max: float = Field(..., description="Upper x bound")
+    h: float = Field(default=0.1, description="Step size")
+    method: Literal["euler", "improved_euler", "runge_kutta"] = Field(default="runge_kutta")
+
+
 def parse_function(func_str: str):
     """Parse a string function into a sympy expression."""
     x = sp.Symbol('x')
@@ -87,6 +97,144 @@ def parse_function(func_str: str):
         return expr, x
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid function: {str(e)}")
+
+
+def parse_ode_function(func_str: str):
+    """Parse y' = f(x, y) with only x and y symbols."""
+    x, y = sp.symbols("x y")
+    try:
+        normalized = normalize_function_aliases(func_str)
+        expr = sp.sympify(normalized)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid differential equation: {str(e)}")
+
+    unknown_symbols = expr.free_symbols - {x, y}
+    if unknown_symbols:
+        unknown = ", ".join(sorted(str(s) for s in unknown_symbols))
+        raise HTTPException(
+            status_code=400,
+            detail=f"Differential equation contains invalid symbols: {unknown}. Use only x and y."
+        )
+
+    return expr, x, y
+
+
+def evaluate_ode_func(expr, x_sym, y_sym, x_val: float, y_val: float) -> float:
+    """Evaluate f(x, y) safely for ODE methods."""
+    try:
+        result = float(expr.subs({x_sym: x_val, y_sym: y_val}).evalf())
+        if np.isnan(result) or np.isinf(result):
+            raise ValueError("Evaluation returned NaN/Inf")
+        return result
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot evaluate differential equation at (x={x_val}, y={y_val}): {str(e)}"
+        )
+
+
+def try_symbolic_ode_solution(expr, x_sym, y_sym, x0: float, y0: float):
+    """Try obtaining an analytical solution y(x) and a compact explanation."""
+    y_func = sp.Function("y")
+    ode_eq = sp.Eq(sp.diff(y_func(x_sym), x_sym), expr.subs(y_sym, y_func(x_sym)))
+
+    try:
+        hints = tuple(sp.classify_ode(ode_eq, y_func(x_sym)))
+    except Exception:
+        hints = tuple()
+
+    preferred_hint = None
+    if hints:
+        preferred_hint = next((hint for hint in hints if isinstance(hint, str) and not hint.endswith("_Integral")), None)
+        if preferred_hint is None:
+            preferred_hint = next((hint for hint in hints if isinstance(hint, str)), None)
+
+    x0_exact = sp.nsimplify(x0)
+    y0_exact = sp.nsimplify(y0)
+
+    solution_eq = None
+    solved_with_ics = False
+
+    try:
+        if preferred_hint:
+            solution_eq = sp.dsolve(
+                ode_eq,
+                y_func(x_sym),
+                hint=preferred_hint,
+                ics={y_func(x0_exact): y0_exact},
+            )
+        else:
+            solution_eq = sp.dsolve(
+                ode_eq,
+                y_func(x_sym),
+                ics={y_func(x0_exact): y0_exact},
+            )
+        solved_with_ics = True
+    except Exception:
+        try:
+            if preferred_hint:
+                solution_eq = sp.dsolve(ode_eq, y_func(x_sym), hint=preferred_hint)
+            else:
+                solution_eq = sp.dsolve(ode_eq, y_func(x_sym))
+        except Exception:
+            return None
+
+    if not isinstance(solution_eq, sp.Equality):
+        return None
+
+    solution_rhs = sp.simplify(solution_eq.rhs)
+    satisfies_initial_condition = None
+    if solved_with_ics:
+        try:
+            check_value = sp.simplify(solution_rhs.subs(x_sym, x0_exact) - y0_exact)
+            satisfies_initial_condition = bool(check_value == 0)
+        except Exception:
+            satisfies_initial_condition = None
+
+    steps = [
+        {
+            "title": "1) Planteo del problema",
+            "description": "Se arma la EDO con condicion inicial y se busca una solucion cerrada y(x).",
+            "latex": rf"\frac{{dy}}{{dx}} = {sp.latex(expr)},\quad y({sp.latex(x0_exact)}) = {sp.latex(y0_exact)}",
+        },
+        {
+            "title": "2) Clasificacion automatica",
+            "description": f"SymPy clasifica la EDO y elige una estrategia de resolucion ({preferred_hint or 'automatica'}).",
+            "latex": None,
+        },
+        {
+            "title": "3) Resolucion simbolica",
+            "description": "Se aplica dsolve para obtener la solucion general o particular.",
+            "latex": sp.latex(solution_eq),
+        },
+    ]
+
+    if solved_with_ics:
+        steps.append(
+            {
+                "title": "4) Aplicacion de la condicion inicial",
+                "description": "Se ajusta la constante de integracion usando el punto inicial dado.",
+                "latex": rf"y({sp.latex(x0_exact)}) = {sp.latex(y0_exact)}",
+            }
+        )
+
+    steps.append(
+        {
+            "title": "5) Solucion final",
+            "description": "Se expresa la funcion y(x) en forma cerrada (si fue posible).",
+            "latex": rf"y(x) = {sp.latex(solution_rhs)}",
+        }
+    )
+
+    return {
+        "available": True,
+        "hint": preferred_hint,
+        "solved_with_ics": solved_with_ics,
+        "satisfies_initial_condition": satisfies_initial_condition,
+        "solution_latex": sp.latex(solution_eq),
+        "solution_expr_latex": sp.latex(solution_rhs),
+        "steps": steps,
+    }
 
 
 def normalize_function_aliases(func_str: str) -> str:
@@ -1050,4 +1198,125 @@ async def monte_carlo_integration(req: MonteCarloRequest):
         "abs_error": round(float(abs_error), 10) if abs_error is not None else None,
         "method_details": method_details,
         "sample_points": vis_points,
+    }
+
+
+@app.post("/differential-equation")
+async def differential_equation(req: DifferentialEquationRequest):
+    """Solve y' = f(x, y) with Euler, Improved Euler (Heun), or RK4."""
+    if req.x_max <= req.x_min:
+        raise HTTPException(status_code=400, detail="Invalid range: x_max must be greater than x_min")
+    if req.h <= 0:
+        raise HTTPException(status_code=400, detail="Step h must be positive")
+    if not (req.x_min <= req.x0 <= req.x_max):
+        raise HTTPException(status_code=400, detail="Initial x0 must lie inside [x_min, x_max]")
+
+    expr, x_sym, y_sym = parse_ode_function(req.equation)
+
+    def f(x_val: float, y_val: float) -> float:
+        return evaluate_ode_func(expr, x_sym, y_sym, x_val, y_val)
+
+    max_steps = 50000
+
+    def integrate_direction(start_x: float, start_y: float, target_x: float, step_sign: float, direction: str):
+        current_x = float(start_x)
+        current_y = float(start_y)
+
+        local_points = [{"x": round(current_x, 10), "y": round(current_y, 10)}]
+        local_iterations = []
+
+        for _ in range(max_steps):
+            remaining = target_x - current_x
+            if abs(remaining) <= 1e-12:
+                break
+
+            h_step = step_sign * req.h
+            if abs(h_step) > abs(remaining):
+                h_step = remaining
+
+            next_x = current_x + h_step
+
+            if req.method == "euler":
+                k1 = f(current_x, current_y)
+                next_y = current_y + h_step * k1
+                k2 = None
+                k3 = None
+                k4 = None
+                slope_used = k1
+
+            elif req.method == "improved_euler":
+                k1 = f(current_x, current_y)
+                y_predictor = current_y + h_step * k1
+                k2 = f(next_x, y_predictor)
+                next_y = current_y + (h_step / 2.0) * (k1 + k2)
+                k3 = None
+                k4 = None
+                slope_used = (k1 + k2) / 2.0
+
+            else:  # runge_kutta (RK4)
+                half_step = h_step / 2.0
+                k1 = f(current_x, current_y)
+                k2 = f(current_x + half_step, current_y + half_step * k1)
+                k3 = f(current_x + half_step, current_y + half_step * k2)
+                k4 = f(next_x, current_y + h_step * k3)
+                next_y = current_y + (h_step / 6.0) * (k1 + 2 * k2 + 2 * k3 + k4)
+                slope_used = (k1 + 2 * k2 + 2 * k3 + k4) / 6.0
+
+            if not np.isfinite(next_y):
+                raise HTTPException(status_code=400, detail="Method diverged: non-finite y value encountered")
+
+            local_iterations.append({
+                "direction": direction,
+                "x_i": round(current_x, 10),
+                "y_i": round(current_y, 10),
+                "x_next": round(next_x, 10),
+                "y_next": round(float(next_y), 10),
+                "h_step": round(float(h_step), 10),
+                "slope": round(float(slope_used), 10),
+                "k1": round(float(k1), 10),
+                "k2": round(float(k2), 10) if k2 is not None else None,
+                "k3": round(float(k3), 10) if k3 is not None else None,
+                "k4": round(float(k4), 10) if k4 is not None else None,
+            })
+
+            current_x = float(next_x)
+            current_y = float(next_y)
+            local_points.append({"x": round(current_x, 10), "y": round(current_y, 10)})
+
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="Too many iterations. Reduce interval size or increase h to avoid excessive steps."
+            )
+
+        return local_points, local_iterations
+
+    points_forward, iterations_forward = integrate_direction(
+        req.x0, req.y0, req.x_max, 1.0, "forward"
+    )
+    points_backward, iterations_backward = integrate_direction(
+        req.x0, req.y0, req.x_min, -1.0, "backward"
+    )
+
+    points = list(reversed(points_backward)) + points_forward[1:]
+
+    all_iterations = iterations_backward + iterations_forward
+    all_iterations.sort(key=lambda item: (item["x_next"], item["direction"]))
+    for idx, item in enumerate(all_iterations, start=1):
+        item["iteration"] = idx
+
+    analytic_solution = try_symbolic_ode_solution(expr, x_sym, y_sym, req.x0, req.y0)
+
+    return {
+        "equation": req.equation,
+        "equation_latex": sp.latex(expr),
+        "method": req.method,
+        "x0": round(float(req.x0), 10),
+        "y0": round(float(req.y0), 10),
+        "x_min": round(float(req.x_min), 10),
+        "x_max": round(float(req.x_max), 10),
+        "h": round(float(req.h), 10),
+        "points": points,
+        "iterations": all_iterations,
+        "analytic_solution": analytic_solution,
     }
