@@ -1,0 +1,150 @@
+@import "mafs/core.css";
+@import "katex/dist/katex.min.css";
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 0 0% 9%;
+    --card: 0 0% 100%;
+    --card-foreground: 0 0% 9%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 0 0% 9%;
+    --primary: 262 83% 58%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 0 0% 96%;
+    --secondary-foreground: 0 0% 9%;
+    --muted: 0 0% 96%;
+    --muted-foreground: 0 0% 45%;
+    --accent: 262 83% 58%;
+    --accent-foreground: 0 0% 100%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 0 0% 90%;
+    --input: 0 0% 90%;
+    --ring: 262 83% 58%;
+    --radius: 0.5rem;
+    --chart-1: 262 83% 58%;
+    --chart-2: 199 89% 48%;
+    --chart-3: 142 71% 45%;
+    --chart-4: 38 92% 50%;
+    --chart-5: 0 84% 60%;
+  }
+
+  .dark {
+    --background: 0 0% 4%;
+    --foreground: 0 0% 95%;
+    --card: 0 0% 7%;
+    --card-foreground: 0 0% 95%;
+    --popover: 0 0% 7%;
+    --popover-foreground: 0 0% 95%;
+    --primary: 262 83% 58%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 0 0% 12%;
+    --secondary-foreground: 0 0% 95%;
+    --muted: 0 0% 15%;
+    --muted-foreground: 0 0% 55%;
+    --accent: 262 83% 58%;
+    --accent-foreground: 0 0% 100%;
+    --destructive: 0 62% 50%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 0 0% 18%;
+    --input: 0 0% 18%;
+    --ring: 262 83% 58%;
+    --chart-1: 262 83% 58%;
+    --chart-2: 199 89% 48%;
+    --chart-3: 142 71% 45%;
+    --chart-4: 38 92% 50%;
+    --chart-5: 0 84% 60%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground antialiased;
+  }
+}
+
+/* Mafs overrides for dark mode */
+.dark .MafsView {
+  --mafs-bg: hsl(0 0% 4%);
+  --mafs-fg: hsl(0 0% 95%);
+  --mafs-line-color: hsl(0 0% 17%);
+  --mafs-origin-color: hsl(0 0% 62%);
+  --grid-line-subdivision-color: hsl(0 0% 12%);
+  --mafs-axis-stroke-width: 1.7;
+}
+
+.MafsView {
+  --mafs-bg: hsl(0 0% 100%);
+  --mafs-fg: hsl(0 0% 9%);
+  --mafs-line-color: hsl(0 0% 90%);
+  --mafs-origin-color: hsl(0 0% 42%);
+  --grid-line-subdivision-color: hsl(0 0% 94%);
+  --mafs-axis-stroke-width: 1.7;
+}
+
+/* Glass card effect */
+.glass-card {
+  @apply bg-card/80 backdrop-blur-xl border border-border/50 shadow-lg;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  @apply bg-transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply bg-muted-foreground/20 rounded-full;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  @apply bg-muted-foreground/40;
+}
+
+/* Method color accents */
+.method-bisection {
+  --method-color: hsl(199 89% 48%);
+}
+.method-fixed-point {
+  --method-color: hsl(262 83% 58%);
+}
+.method-aitken {
+  --method-color: hsl(280 65% 60%);
+}
+.method-newton {
+  --method-color: hsl(38 92% 50%);
+}
+.method-interpolation {
+  --method-color: hsl(142 71% 45%);
+}
+.method-derivative {
+  --method-color: hsl(0 84% 60%);
+}
+.method-integration {
+  --method-color: hsl(199 89% 48%);
+}
+.method-monte-carlo {
+  --method-color: hsl(160 84% 39%);
+}
+
+/* KaTeX styling for dark mode */
+.dark .katex {
+  color: hsl(0 0% 95%);
+}
+
+/* Coordinate display */
+.coordinate-display {
+  @apply absolute bottom-2 left-2 px-2 py-1 text-xs font-mono bg-background/80 backdrop-blur-sm rounded border border-border;
+}

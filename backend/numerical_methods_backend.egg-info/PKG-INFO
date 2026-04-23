@@ -1,0 +1,8 @@
+Metadata-Version: 2.4
+Name: numerical-methods-backend
+Version: 0.1.0
+Summary: FastAPI backend for numerical methods visualization
+Requires-Python: >=3.12
+Requires-Dist: fastapi[standard]>=0.128.1
+Requires-Dist: sympy>=1.12
+Requires-Dist: numpy>=1.26

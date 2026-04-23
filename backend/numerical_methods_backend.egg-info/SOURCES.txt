@@ -1,0 +1,7 @@
+main.py
+pyproject.toml
+numerical_methods_backend.egg-info/PKG-INFO
+numerical_methods_backend.egg-info/SOURCES.txt
+numerical_methods_backend.egg-info/dependency_links.txt
+numerical_methods_backend.egg-info/requires.txt
+numerical_methods_backend.egg-info/top_level.txt

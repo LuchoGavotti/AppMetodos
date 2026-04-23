@@ -1,0 +1,10 @@
+[project]
+name = "numerical-methods-backend"
+version = "0.1.0"
+description = "FastAPI backend for numerical methods visualization"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi[standard]>=0.128.1",
+    "sympy>=1.12",
+    "numpy>=1.26",
+]
