@@ -19,6 +19,7 @@ interface KeyDef {
 
 const BASE_KEYS: KeyDef[] = [
   { label: "sqrt", snippet: "sqrt(|)" },
+  { label: "cbrt", snippet: "cbrt(|)" },
   { label: "^", snippet: "^|" },
   { label: "^2", snippet: "^2" },
   { label: "exp", snippet: "exp(|)" },

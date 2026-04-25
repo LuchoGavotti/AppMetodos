@@ -21,6 +21,7 @@ const MATH_FUNCTIONS: Record<string, (x: number) => number> = {
   log10: Math.log10,
   sqrt: Math.sqrt,
   raiz: Math.sqrt,
+  cbrt: (x: number) => (x < 0 ? -Math.pow(-x, 1 / 3) : Math.pow(x, 1 / 3)),
   abs: Math.abs,
   ceil: Math.ceil,
   floor: Math.floor,

@@ -110,10 +110,10 @@ export interface NewtonRaphsonResponse {
 }
 
 export interface InterpolationRequest {
-  x_values: number[];
-  y_values: number[];
+  x_values: Array<number | string>;
+  y_values: Array<number | string>;
   true_function?: string;
-  error_point?: number;
+  error_point?: number | string;
 }
 
 export interface InterpolationPoint {
@@ -142,6 +142,14 @@ export interface InterpolationErrorAnalysis {
   true_function_latex: string;
   global_max_error?: number;
   global_max_error_at_x?: number;
+  theoretical_error_bound_global?: number | null;
+  theoretical_error_bound_local?: number | null;
+  derivative_expr?: string | null;
+  M_n1?: number | null;
+  M_n1_max_point?: number | null;
+  product_expr?: string | null;
+  max_product?: number | null;
+  max_product_at_x?: number | null;
   local_error?: {
     x: number;
     true_value: number;
@@ -159,6 +167,17 @@ export interface InterpolationResponse {
   points: InterpolationPoint[];
   curve_points: InterpolationPoint[];
   degree: number;
+  real_function?: string | null;
+  local_real_error?: number | null;
+  global_real_error_approx?: number | null;
+  theoretical_error_bound_global?: number | null;
+  theoretical_error_bound_local?: number | null;
+  derivative_expr?: string | null;
+  M_n1?: number | null;
+  M_n1_max_point?: number | null;
+  product_expr?: string | null;
+  max_product?: number | null;
+  max_product_at_x?: number | null;
   error_analysis?: InterpolationErrorAnalysis | null;
 }
 

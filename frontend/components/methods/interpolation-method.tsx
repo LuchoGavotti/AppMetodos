@@ -67,17 +67,29 @@ export function InterpolationMethod() {
   };
 
   const parseRows = () => {
-    const parsed = rows.map((row) => ({
-      x: Number(row.x),
-      y: Number(row.y),
-    }));
+    const parsed = rows.map((row, index) => {
+      const xValue = evaluate(row.x, 0);
+      const yValue = evaluate(row.y, 0);
+
+      return {
+        x: row.x.trim(),
+        y: row.y.trim(),
+        xNumeric: xValue,
+        yNumeric: yValue,
+        index,
+      };
+    });
 
     if (parsed.length < 2) {
       throw new Error("Debes ingresar al menos 2 puntos.");
     }
 
-    if (parsed.some((p) => !Number.isFinite(p.x) || !Number.isFinite(p.y))) {
-      throw new Error("Todos los valores x e y deben ser numericos validos.");
+    if (parsed.some((p) => p.x === "" || p.y === "")) {
+      throw new Error("Todos los puntos deben tener valores x e y.");
+    }
+
+    if (parsed.some((p) => !Number.isFinite(p.xNumeric) || !Number.isFinite(p.yNumeric))) {
+      throw new Error("Todos los valores x e y deben ser expresiones numericas validas.");
     }
 
     return parsed;
@@ -91,7 +103,7 @@ export function InterpolationMethod() {
 
     try {
       const nextRows = rows.map((row) => {
-        const xVal = Number(row.x);
+        const xVal = evaluate(row.x, 0);
         if (!Number.isFinite(xVal)) {
           throw new Error("Hay valores x invalidos en la tabla.");
         }
@@ -122,7 +134,7 @@ export function InterpolationMethod() {
         x_values: parsed.map((p) => p.x),
         y_values: parsed.map((p) => p.y),
         true_function: trueFunction.trim() || undefined,
-        error_point: errorPoint.trim() === "" ? undefined : Number(errorPoint),
+        error_point: errorPoint.trim() === "" ? undefined : errorPoint.trim(),
       });
       setResult(response);
     } catch (err) {
@@ -192,20 +204,18 @@ export function InterpolationMethod() {
                   <TableRow key={i}>
                     <TableCell>
                       <Input
-                        type="number"
-                        step="any"
                         value={row.x}
                         onChange={(e) => updateRow(i, "x", e.target.value)}
-                        placeholder="x"
+                        placeholder="x, ej.: pi/2"
+                        className="font-mono"
                       />
                     </TableCell>
                     <TableCell>
                       <Input
-                        type="number"
-                        step="any"
                         value={row.y}
                         onChange={(e) => updateRow(i, "y", e.target.value)}
-                        placeholder="y"
+                        placeholder="y, ej.: e^2"
+                        className="font-mono"
                       />
                     </TableCell>
                     <TableCell>
@@ -242,11 +252,10 @@ export function InterpolationMethod() {
             <ExpressionKeyboard inputRef={trueFunctionInputRef} setValue={setTrueFunction} />
             <div className="grid grid-cols-[1fr_auto] gap-2">
               <Input
-                type="number"
-                step="any"
                 value={errorPoint}
                 onChange={(e) => setErrorPoint(e.target.value)}
-                placeholder="x para error local (opcional)"
+                placeholder="x para error local, ej.: pi/3"
+                className="font-mono"
               />
               <Button type="button" variant="outline" onClick={fillYFromFunction}>
                 <WandSparkles className="size-4" />
@@ -310,19 +319,65 @@ export function InterpolationMethod() {
                 {result.error_analysis && (
                   <div className="space-y-1 pt-2 border-t border-border/60">
                     <p>
-                      <strong>Funcion de referencia:</strong> <LaTeX math={result.error_analysis.true_function_latex} />
+                      Funcion de referencia: <LaTeX math={result.error_analysis.true_function_latex} />
                     </p>
                     {result.error_analysis.global_max_error !== undefined && (
                       <p>
-                        <strong>Error maximo global:</strong> {result.error_analysis.global_max_error}
+                        Error maximo global: {result.error_analysis.global_max_error}
                         {" "}(en x={result.error_analysis.global_max_error_at_x})
                       </p>
                     )}
                     {result.error_analysis.local_error && (
-                      <p>
+                      <p className="font-medium text-foreground">
                         <strong>Error local en x={result.error_analysis.local_error.x}:</strong>{" "}
                         {result.error_analysis.local_error.abs_error}
                       </p>
+                    )}
+                    {result.error_analysis.theoretical_error_bound_global !== undefined &&
+                      result.error_analysis.theoretical_error_bound_global !== null && (
+                        <p className="font-medium text-foreground">
+                          <strong>Cota teorica global del error:</strong>{" "}
+                          {result.error_analysis.theoretical_error_bound_global}
+                          {result.error_analysis.max_product_at_x !== undefined &&
+                          result.error_analysis.max_product_at_x !== null
+                            ? ` (max |Π(x-x_i)| en x=${result.error_analysis.max_product_at_x})`
+                            : ""}
+                        </p>
+                      )}
+                    {result.error_analysis.theoretical_error_bound_local !== undefined &&
+                      result.error_analysis.theoretical_error_bound_local !== null && (
+                        <p>
+                          Cota teorica local del error:{" "}
+                          {result.error_analysis.theoretical_error_bound_local}
+                        </p>
+                      )}
+                    {(result.error_analysis.derivative_expr ||
+                      result.error_analysis.M_n1 !== undefined ||
+                      result.error_analysis.product_expr) && (
+                      <div className="space-y-1 text-muted-foreground">
+                        {result.error_analysis.derivative_expr && (
+                          <p>
+                            f^(n+1)(x): {result.error_analysis.derivative_expr}
+                            {result.error_analysis.M_n1 !== undefined &&
+                            result.error_analysis.M_n1 !== null
+                              ? `, M_(n+1)=${result.error_analysis.M_n1}`
+                              : ""}
+                            {result.error_analysis.M_n1_max_point !== undefined &&
+                            result.error_analysis.M_n1_max_point !== null
+                              ? ` en x=${result.error_analysis.M_n1_max_point}`
+                              : ""}
+                          </p>
+                        )}
+                        {result.error_analysis.product_expr && (
+                          <p>
+                            Π(x-x_i): {result.error_analysis.product_expr}
+                            {result.error_analysis.max_product !== undefined &&
+                            result.error_analysis.max_product !== null
+                              ? `, max=${result.error_analysis.max_product}`
+                              : ""}
+                          </p>
+                        )}
+                      </div>
                     )}
                   </div>
                 )}

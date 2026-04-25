@@ -2,6 +2,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import Optional, Literal
+from math import factorial
 import sympy as sp
 import numpy as np
 import re
@@ -45,10 +46,10 @@ class NewtonRaphsonRequest(BaseModel):
     max_iterations: int = Field(default=100)
 
 class InterpolationRequest(BaseModel):
-    x_values: list[float] = Field(..., description="X coordinates of points")
-    y_values: list[float] = Field(..., description="Y coordinates of points")
+    x_values: list[float | str] = Field(..., description="X coordinates of points")
+    y_values: list[float | str] = Field(..., description="Y coordinates of points")
     true_function: Optional[str] = Field(None, description="Optional real function for error analysis")
-    error_point: Optional[float] = Field(None, description="Optional x value for local error")
+    error_point: Optional[float | str] = Field(None, description="Optional x value for local error")
 
 class DerivativeRequest(BaseModel):
     function: Optional[str] = Field(None, description="Function string (if analytical)")
@@ -131,6 +132,17 @@ def evaluate_ode_func(expr, x_sym, y_sym, x_val: float, y_val: float) -> float:
             status_code=400,
             detail=f"Cannot evaluate differential equation at (x={x_val}, y={y_val}): {str(e)}"
         )
+
+
+def finite_float(value):
+    """Convert to finite float or return None."""
+    try:
+        numeric = float(value)
+        if np.isfinite(numeric):
+            return numeric
+    except Exception:
+        return None
+    return None
 
 
 def try_symbolic_ode_solution(expr, x_sym, y_sym, x0: float, y0: float):
@@ -239,7 +251,7 @@ def try_symbolic_ode_solution(expr, x_sym, y_sym, x0: float, y0: float):
 
 def normalize_function_aliases(func_str: str) -> str:
     """Allow common Spanish aliases for function names."""
-    normalized = func_str
+    normalized = func_str.replace("^", "**")
     replacements = {
         r"\bsen\s*\(": "sin(",
         r"\btg\s*\(": "tan(",
@@ -261,6 +273,41 @@ def evaluate_func(expr, x_sym, x_val: float) -> float:
         return result
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Cannot evaluate function at x={x_val}: {str(e)}")
+
+
+def parse_numeric_expression(value, field_name: str) -> float:
+    """Parse a numeric scalar expression like pi/2, e**2 or sqrt(2)."""
+    if isinstance(value, (int, float)):
+        numeric = float(value)
+        if not np.isfinite(numeric):
+            raise HTTPException(status_code=400, detail=f"{field_name} must be a finite number")
+        return numeric
+
+    if not isinstance(value, str) or not value.strip():
+        raise HTTPException(status_code=400, detail=f"{field_name} must be a valid numeric expression")
+
+    try:
+        normalized = normalize_function_aliases(value.strip())
+        expr = sp.sympify(normalized)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid {field_name}: {str(exc)}")
+
+    if expr.free_symbols:
+        symbols = ", ".join(sorted(str(s) for s in expr.free_symbols))
+        raise HTTPException(
+            status_code=400,
+            detail=f"{field_name} must not contain variables. Invalid symbols: {symbols}"
+        )
+
+    try:
+        numeric = float(expr.evalf())
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Cannot evaluate {field_name}: {str(exc)}")
+
+    if not np.isfinite(numeric):
+        raise HTTPException(status_code=400, detail=f"{field_name} must evaluate to a finite number")
+
+    return numeric
 
 
 def make_rng(seed: Optional[int]) -> np.random.Generator:
@@ -528,15 +575,37 @@ async def aitken(req: AitkenRequest):
         x1 = evaluate_func(g_expr, x, x0)
         x2 = evaluate_func(g_expr, x, x1)
         
-        denominator = x2 - 2*x1 + x0
-        if abs(denominator) < 1e-15:
-            raise HTTPException(
-                status_code=400,
-                detail="Aitken acceleration failed: denominator too small"
-            )
+        # Check if x0 is already a fixed point
+        if abs(x1 - x0) < 1e-15:
+            # x0 is a fixed point: g(x0) ≈ x0
+            error = abs(x1 - x0)
+            iterations.append({
+                "iteration": i + 1,
+                "x_n": round(x0, 10),
+                "x_n1": round(x1, 10),
+                "x_n2": round(x2, 10),
+                "x_accel": round(x0, 10),
+                "error": round(error, 10)
+            })
+            return {
+                "root": round(x0, 10),
+                "iterations": iterations,
+                "converged": True,
+                "g_function": req.g_function,
+                "g_expr_latex": sp.latex(g_expr),
+                "dg_expr_latex": sp.latex(dg_expr),
+                "note": "Punto fijo detectado en la iteracion inicial"
+            }
         
-        x_accel = x0 - (x1 - x0)**2 / denominator
-        error = abs((x_accel - x0) / x_accel) if x_accel != 0 else float('inf')
+        denominator = x2 - 2*x1 + x0
+        
+        # If denominator is very small, use x0 as the accelerated value
+        if abs(denominator) < 1e-15:
+            x_accel = x0
+            error = abs(x1 - x0)
+        else:
+            x_accel = x0 - (x1 - x0)**2 / denominator
+            error = abs((x_accel - x0) / x_accel) if x_accel != 0 else float('inf')
         
         iterations.append({
             "iteration": i + 1,
@@ -646,10 +715,25 @@ async def lagrange_interpolation(req: InterpolationRequest):
     if len(req.x_values) < 2:
         raise HTTPException(status_code=400, detail="Need at least 2 points for interpolation")
 
-    if len(set(req.x_values)) != len(req.x_values):
+    parsed_x_values = [
+        parse_numeric_expression(value, f"x_values[{i}]")
+        for i, value in enumerate(req.x_values)
+    ]
+    parsed_y_values = [
+        parse_numeric_expression(value, f"y_values[{i}]")
+        for i, value in enumerate(req.y_values)
+    ]
+    parsed_error_point = (
+        parse_numeric_expression(req.error_point, "error_point")
+        if req.error_point is not None
+        else None
+    )
+
+    if len(set(parsed_x_values)) != len(parsed_x_values):
         raise HTTPException(status_code=400, detail="x_values cannot contain duplicates")
     
-    n = len(req.x_values)
+    n = len(parsed_x_values)
+    degree = n - 1
     x = sp.Symbol('x')
 
     def simplify_expr(expr):
@@ -657,7 +741,7 @@ async def lagrange_interpolation(req: InterpolationRequest):
         return sp.simplify(sp.cancel(sp.together(expr)))
 
     # Keep points ordered by x for stable display and plotting.
-    points_xy = sorted(zip(req.x_values, req.y_values), key=lambda p: p[0])
+    points_xy = sorted(zip(parsed_x_values, parsed_y_values), key=lambda p: p[0])
     x_sorted = [float(p[0]) for p in points_xy]
     y_sorted = [float(p[1]) for p in points_xy]
     
@@ -722,31 +806,56 @@ async def lagrange_interpolation(req: InterpolationRequest):
             "points": points
         })
 
+    real_function = None
+    local_real_error = None
+    global_real_error_approx = None
+    theoretical_error_bound_global = None
+    theoretical_error_bound_local = None
+    M_n1 = None
+    derivative_order = None
+    derivative_expr = None
+    product_expr = None
+    max_product = None
+    max_product_at_x = None
+    interval = [round(float(x_min), 10), round(float(x_max), 10)]
+    theoretical_error_message = None
+    M_n1_method = None
+    M_n1_candidates = []
+    M_n1_max_point = None
+
     error_analysis = None
     if req.true_function:
+        real_function = req.true_function
         true_expr, true_x = parse_function(req.true_function)
-        true_fn = sp.lambdify(true_x, true_expr, modules=["numpy"])
+        true_fn = None
+
+        try:
+            true_fn = sp.lambdify(true_x, true_expr, modules=["numpy"])
+        except Exception as exc:
+            theoretical_error_message = f"Could not evaluate the real function numerically: {str(exc)}"
 
         grid_x = np.linspace(x_min, x_max, 400)
         local_errors = []
-        for xi in grid_x:
-            try:
-                true_y = float(true_fn(float(xi)))
-                poly_y = float(poly_fn(float(xi)))
-                if np.isfinite(true_y) and np.isfinite(poly_y):
-                    local_errors.append((float(xi), abs(true_y - poly_y)))
-            except Exception:
-                continue
+        if true_fn is not None:
+            for xi in grid_x:
+                try:
+                    true_y = float(true_fn(float(xi)))
+                    poly_y = float(poly_fn(float(xi)))
+                    if np.isfinite(true_y) and np.isfinite(poly_y):
+                        local_errors.append((float(xi), abs(true_y - poly_y)))
+                except Exception:
+                    continue
 
         global_max_error = None
         at_x = None
         if local_errors:
             at_x, global_max_error = max(local_errors, key=lambda t: t[1])
+            global_real_error_approx = round(global_max_error, 10)
 
         point_error = None
-        if req.error_point is not None:
+        if parsed_error_point is not None and true_fn is not None:
             try:
-                xe = float(req.error_point)
+                xe = float(parsed_error_point)
                 true_y = float(true_fn(xe))
                 poly_y = float(poly_fn(xe))
                 if np.isfinite(true_y) and np.isfinite(poly_y):
@@ -756,8 +865,144 @@ async def lagrange_interpolation(req: InterpolationRequest):
                         "interp_value": round(poly_y, 10),
                         "abs_error": round(abs(true_y - poly_y), 10),
                     }
+                    local_real_error = point_error["abs_error"]
             except Exception:
                 point_error = None
+
+        derivative_order = degree + 1
+        try:
+            derivative_symbolic = simplify_expr(sp.diff(true_expr, true_x, derivative_order))
+            derivative_expr = str(derivative_symbolic)
+
+            product_symbolic = simplify_expr(sp.prod(x - xi for xi in x_sorted))
+            product_expr = str(product_symbolic)
+
+            derivative_fn = sp.lambdify(true_x, derivative_symbolic, modules=["numpy"])
+            product_fn = sp.lambdify(x, product_symbolic, modules=["numpy"])
+
+            interval_domain = sp.Interval(x_min, x_max)
+            candidate_points = []
+            candidate_keys = set()
+
+            def add_candidate(point, source):
+                numeric_point = finite_float(sp.N(point))
+                if numeric_point is None:
+                    return
+                if numeric_point < x_min - 1e-9 or numeric_point > x_max + 1e-9:
+                    return
+                rounded_key = round(numeric_point, 12)
+                if rounded_key in candidate_keys:
+                    return
+
+                try:
+                    deriv_abs = finite_float(np.abs(derivative_fn(numeric_point)))
+                except Exception:
+                    deriv_abs = None
+
+                candidate_keys.add(rounded_key)
+                candidate_points.append({
+                    "x": round(float(numeric_point), 10),
+                    "abs_value": round(float(deriv_abs), 10) if deriv_abs is not None else None,
+                    "source": source,
+                })
+
+            add_candidate(x_min, "endpoint")
+            add_candidate(x_max, "endpoint")
+
+            def extract_real_solutions(expr_to_solve, source):
+                try:
+                    solution_set = sp.solveset(expr_to_solve, true_x, domain=interval_domain)
+                except Exception:
+                    return False
+
+                if isinstance(solution_set, sp.FiniteSet):
+                    for solution in solution_set:
+                        if solution.is_real is False:
+                            continue
+                        add_candidate(solution, source)
+                    return True
+
+                return False
+
+            derivative_critical_expr = simplify_expr(sp.diff(derivative_symbolic, true_x))
+            critical_points_resolved = extract_real_solutions(
+                derivative_critical_expr,
+                "critical_point"
+            )
+            zero_points_resolved = extract_real_solutions(
+                derivative_symbolic,
+                "abs_zero"
+            )
+
+            dense_grid = np.linspace(x_min, x_max, 2000)
+            product_values = []
+            product_grid_points = []
+
+            for xi in dense_grid:
+                try:
+                    prod_val = product_fn(float(xi))
+                    prod_abs = float(np.abs(prod_val))
+                    if np.isfinite(prod_abs):
+                        product_values.append(prod_abs)
+                        product_grid_points.append(float(xi))
+                except Exception:
+                    continue
+
+            if critical_points_resolved and zero_points_resolved and candidate_points:
+                valid_candidates = [p for p in candidate_points if p["abs_value"] is not None]
+                if valid_candidates:
+                    best_candidate = max(valid_candidates, key=lambda p: p["abs_value"])
+                    M_n1 = float(best_candidate["abs_value"])
+                    M_n1_method = "analytic"
+                    M_n1_max_point = best_candidate["x"]
+                M_n1_candidates = candidate_points
+            else:
+                derivative_values = []
+                derivative_grid_points = []
+                for xi in dense_grid:
+                    try:
+                        deriv_val = derivative_fn(float(xi))
+                        deriv_abs = float(np.abs(deriv_val))
+                        if np.isfinite(deriv_abs):
+                            derivative_values.append(deriv_abs)
+                            derivative_grid_points.append(float(xi))
+                    except Exception:
+                        continue
+
+                if derivative_values:
+                    max_index = int(np.argmax(derivative_values))
+                    M_n1 = float(derivative_values[max_index])
+                    M_n1_method = "grid"
+                    M_n1_max_point = round(derivative_grid_points[max_index], 10)
+
+                M_n1_candidates = candidate_points
+
+            if product_values:
+                product_max_index = int(np.argmax(product_values))
+                max_product = float(product_values[product_max_index])
+                max_product_at_x = round(product_grid_points[product_max_index], 10)
+
+            if M_n1 is not None and max_product is not None:
+                theoretical_error_bound_global = round(
+                    (M_n1 / factorial(derivative_order)) * max_product,
+                    10
+                )
+
+            if parsed_error_point is not None and M_n1 is not None:
+                try:
+                    local_product_abs = float(np.abs(product_fn(float(parsed_error_point))))
+                    if np.isfinite(local_product_abs):
+                        theoretical_error_bound_local = round(
+                            (M_n1 / factorial(derivative_order)) * local_product_abs,
+                            10
+                        )
+                except Exception:
+                    theoretical_error_bound_local = None
+        except Exception as exc:
+            detail = f"Could not compute the theoretical Lagrange error bound: {str(exc)}"
+            theoretical_error_message = (
+                f"{theoretical_error_message} | {detail}" if theoretical_error_message else detail
+            )
 
         error_analysis = {
             "true_function": req.true_function,
@@ -765,6 +1010,19 @@ async def lagrange_interpolation(req: InterpolationRequest):
             "global_max_error": round(global_max_error, 10) if global_max_error is not None else None,
             "global_max_error_at_x": round(at_x, 10) if at_x is not None else None,
             "local_error": point_error,
+            "theoretical_error_bound_global": theoretical_error_bound_global,
+            "theoretical_error_bound_local": theoretical_error_bound_local,
+            "M_n1": round(M_n1, 10) if M_n1 is not None else None,
+            "M_n1_method": M_n1_method,
+            "M_n1_candidates": M_n1_candidates,
+            "M_n1_max_point": M_n1_max_point,
+            "derivative_order": derivative_order,
+            "derivative_expr": derivative_expr,
+            "product_expr": product_expr,
+            "max_product": round(max_product, 10) if max_product is not None else None,
+            "max_product_at_x": max_product_at_x,
+            "interval": interval,
+            "theoretical_error_message": theoretical_error_message,
         }
     
     return {
@@ -775,7 +1033,23 @@ async def lagrange_interpolation(req: InterpolationRequest):
         "basis_curves": basis_curves,
         "points": [{"x": xi, "y": yi} for xi, yi in zip(x_sorted, y_sorted)],
         "curve_points": curve_points,
-        "degree": n - 1,
+        "degree": degree,
+        "real_function": real_function,
+        "local_real_error": local_real_error,
+        "global_real_error_approx": global_real_error_approx,
+        "theoretical_error_bound_global": theoretical_error_bound_global,
+        "theoretical_error_bound_local": theoretical_error_bound_local,
+        "M_n1": round(M_n1, 10) if M_n1 is not None else None,
+        "M_n1_method": M_n1_method,
+        "M_n1_candidates": M_n1_candidates,
+        "M_n1_max_point": M_n1_max_point,
+        "derivative_order": derivative_order,
+        "derivative_expr": derivative_expr,
+        "product_expr": product_expr,
+        "max_product": round(max_product, 10) if max_product is not None else None,
+        "max_product_at_x": max_product_at_x,
+        "interval": interval,
+        "theoretical_error_message": theoretical_error_message,
         "error_analysis": error_analysis
     }
 
