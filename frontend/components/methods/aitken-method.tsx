@@ -11,6 +11,7 @@ import { TheoryModal, LaTeX } from "./theory-modal";
 import { ExpressionKeyboard } from "./expression-keyboard";
 import { api } from "@/lib/api";
 import { getAutoViewBox } from "@/lib/graph-range";
+import { parseIntegerExpression, parseNumericExpression, parseNumericExpressionSafe } from "@/lib/numeric-expression";
 import type { AitkenResponse, APIError } from "@/types/methods";
 import { Play, Loader2 } from "lucide-react";
 
@@ -21,14 +22,9 @@ const THEORY_FORMULAS = [
     description: "Acelera la convergencia extrapolando a partir de tres iteraciones consecutivas.",
   },
   {
-    label: "Forma Alternativa",
-    latex: "\\hat{x}_n = x_n - \\frac{(\\Delta x_n)^2}{\\Delta^2 x_n}",
-    description: "Usando diferencias hacia adelante: Δx_n = x_n+1 - x_n y Δ²x_n = Δx_n+1 - Δx_n.",
-  },
-  {
-    label: "Convergencia",
-    latex: "\\lim_{n \\to \\infty} \\frac{\\hat{x}_n - p}{(x_n - p)^2} = \\frac{-g''(p)}{2g'(p)}",
-    description: "El metodo de Aitken logra convergencia cuadratica a partir de secuencias con convergencia lineal.",
+    label: "Datos consecutivos",
+    latex: "x_n = g(x_0) , x_{n+1} = g(x_n) , x_{n+2} = g(x_{n+1})",
+    description: "Define las iteraciones consecutivas a partir de los resultados anteriores.",
   },
 ];
 
@@ -49,11 +45,15 @@ export function AitkenMethod() {
     setIsLoading(true);
 
     try {
+      const x0Value = parseNumericExpression(x0, "Valor inicial (x0)");
+      const toleranceValue = parseNumericExpression(tolerance, "Tolerancia");
+      const maxIterationsValue = parseIntegerExpression(maxIterations, "Iteraciones maximas", 1);
+
       const response = await api.aitken({
         g_function: gFunc,
-        x0: parseFloat(x0),
-        tolerance: parseFloat(tolerance),
-        max_iterations: parseInt(maxIterations),
+        x0: x0Value,
+        tolerance: toleranceValue,
+        max_iterations: maxIterationsValue,
       });
       setResult(response);
     } catch (err) {
@@ -97,13 +97,35 @@ export function AitkenMethod() {
       }))
     : [];
 
+  const x0Num = parseNumericExpressionSafe(x0);
+  const finiteXs = graphPoints
+    .map((p) => p.x)
+    .filter((v) => Number.isFinite(v));
+  if (Number.isFinite(x0Num)) {
+    finiteXs.push(x0Num);
+  }
+
+  const minObservedX = finiteXs.length > 0 ? Math.min(...finiteXs) : -1;
+  const maxObservedX = finiteXs.length > 0 ? Math.max(...finiteXs) : 1;
+  const centerX = (minObservedX + maxObservedX) / 2;
+  const halfSpanX = Math.max(20, (maxObservedX - minObservedX) * 1.5 + 3);
+
   const viewBox = getAutoViewBox({
-    xMin: -5,
-    xMax: 5,
+    xMin: centerX - halfSpanX,
+    xMax: centerX + halfSpanX,
     functions: graphFunctions.map((f) => f.expr),
     points: graphPoints.map((p) => ({ x: p.x, y: p.y })),
     defaultY: [-5, 5],
   });
+
+  const realRootDetail = result?.real_root_latex ? (
+    <div className="space-y-1">
+      <div>
+        <LaTeX math={`x = ${result.real_root_latex}`} />
+      </div>
+      <div>Aproximacion decimal: {result.real_root_exact}</div>
+    </div>
+  ) : null;
 
   return (
     <MethodContainer
@@ -118,11 +140,13 @@ export function AitkenMethod() {
         />
       }
       error={error}
+      warning={result?.convergence_warning}
       success={
         result?.converged
           ? `Convergio a la raiz x = ${result.root} en ${result.iterations.length} iteraciones`
           : null
       }
+      resultDetail={realRootDetail}
       isLoading={isLoading}
       inputPanel={
         <form onSubmit={handleSubmit} className="space-y-4">
@@ -141,6 +165,7 @@ export function AitkenMethod() {
               <div className="text-xs text-muted-foreground space-y-1">
                 <div><LaTeX math={`g(x) = ${result.g_expr_latex}`} /></div>
                 <div><LaTeX math={`g'(x) = ${result.dg_expr_latex}`} /></div>
+                <div><LaTeX math={`|g'(x_0)| = ${result.dg_x0}`} /></div>
               </div>
             )}
           </div>
@@ -149,8 +174,7 @@ export function AitkenMethod() {
             <Label htmlFor="x0">Valor inicial (x0)</Label>
             <Input
               id="x0"
-              type="number"
-              step="any"
+              type="text"
               value={x0}
               onChange={(e) => setX0(e.target.value)}
             />
@@ -161,8 +185,7 @@ export function AitkenMethod() {
               <Label htmlFor="tolerance">Tolerancia</Label>
               <Input
                 id="tolerance"
-                type="number"
-                step="any"
+                type="text"
                 value={tolerance}
                 onChange={(e) => setTolerance(e.target.value)}
               />
@@ -171,7 +194,7 @@ export function AitkenMethod() {
               <Label htmlFor="maxIterations">Iteraciones maximas</Label>
               <Input
                 id="maxIterations"
-                type="number"
+                type="text"
                 value={maxIterations}
                 onChange={(e) => setMaxIterations(e.target.value)}
               />

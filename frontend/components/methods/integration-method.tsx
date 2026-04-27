@@ -19,6 +19,7 @@ import { TheoryModal, LaTeX } from "./theory-modal";
 import { ExpressionKeyboard } from "./expression-keyboard";
 import { api } from "@/lib/api";
 import { getAutoViewBox } from "@/lib/graph-range";
+import { parseIntegerExpression, parseNumericExpression, parseNumericExpressionSafe } from "@/lib/numeric-expression";
 import type { APIError, IntegrationResponse } from "@/types/methods";
 import { Loader2, Play } from "lucide-react";
 
@@ -32,27 +33,44 @@ type IntegrationMethodId =
 
 const THEORY_FORMULAS = [
   {
+    label: "Regla del Rectangul Medio",
+    latex:
+      "\\int_a^b f(x)\\,dx \\approx \\sum_{i=0}^{n-1} f(a + (i + \\frac{1}{2})h)",
+    description: "Para rectangulo izquierdo usar f(a + i*h), para derecho usar f(a + (i+1)*h)",
+  },
+  {
     label: "Regla del Trapecio",
     latex:
-      "\\int_a^b f(x)\\,dx \\approx \\frac{h}{2}\\left[f(a)+2\\sum_{i=1}^{n-1}f(x_i)+f(b)\\right]",
+      "\\int_a^b f(x)\\,dx \\approx \\frac{h}{2}\\left[f(a)+2\\sum_{i=1}^{n-1}f(a+ih)+f(b)\\right]",
+  },
+  {
+    latex:
+      "E_t = -\\frac{(b-a)^3}{12n^2} f^2(\\xi)",
   },
   {
     label: "Regla de Simpson 1/3",
     latex:
-      "\\int_a^b f(x)\\,dx \\approx \\frac{h}{3}\\sum_{i=0}^{n/2-1}\\left[f(x_{2i})+4f(x_{2i+1})+f(x_{2i+2})\\right]",
+      "\\int_a^b f(x)\\,dx \\approx \\frac{h}{3}\\left[f(a)+4\\sum_{impares}^{}f(a+ih)+2\\sum_{pares}^{}f(a+ih)+f(b)\\right]",
+  },
+  {
+    latex:
+      "E_t = -\\frac{(b-a)^5}{180n^4} f^4(\\xi)",
   },
   {
     label: "Regla de Simpson 3/8",
     latex:
-      "\\int_a^b f(x)\\,dx \\approx \\frac{3h}{8}\\sum_{i=0}^{n/3-1}\\left[f(x_{3i})+3f(x_{3i+1})+3f(x_{3i+2})+f(x_{3i+3})\\right]",
+      "\\int_a^b f(x)\\,dx \\approx \\frac{3h}{8}\\left[f(a)+3\\sum_{impares}^{n-2}f(x_i)+3\\sum_{pares}^{n-1}f(x_i)+2\\sum_{\\dot{3}}^{n-3}f(x_i)+f(b)\\right]",
+  },
+  {
+    latex:
+      "E_t = -\\frac{(b-a)^5}{6480} f^4(\\xi)",
   },
 ];
 
 function parseNumberList(value: string): number[] {
   return value
     .split(",")
-    .map((part) => Number(part.trim()))
-    .filter((num) => Number.isFinite(num));
+    .map((part, index) => parseNumericExpression(part.trim(), `Valor ${index + 1}`));
 }
 
 export function IntegrationMethod() {
@@ -75,11 +93,11 @@ export function IntegrationMethod() {
     setError(null);
     setIsLoading(true);
 
-    const nValue = Number(n);
-    const aValue = Number(a);
-    const bValue = Number(b);
-
     try {
+      const nValue = parseIntegerExpression(n, "Subintervalos (n)", 1);
+      const aValue = parseNumericExpression(a, "a");
+      const bValue = parseNumericExpression(b, "b");
+
       const payload =
         inputMode === "function"
           ? {
@@ -149,8 +167,8 @@ export function IntegrationMethod() {
     { key: "y", label: "f(x)" },
   ];
 
-  const aNum = Number(a);
-  const bNum = Number(b);
+  const aNum = parseNumericExpressionSafe(a);
+  const bNum = parseNumericExpressionSafe(b);
   const minX = Number.isFinite(aNum) ? aNum : -5;
   const maxX = Number.isFinite(bNum) ? bNum : 5;
   const overlayPoints = [
@@ -259,8 +277,7 @@ export function IntegrationMethod() {
               <Label htmlFor="integration-a">a</Label>
               <Input
                 id="integration-a"
-                type="number"
-                step="any"
+                type="text"
                 value={a}
                 onChange={(e) => setA(e.target.value)}
               />
@@ -269,8 +286,7 @@ export function IntegrationMethod() {
               <Label htmlFor="integration-b">b</Label>
               <Input
                 id="integration-b"
-                type="number"
-                step="any"
+                type="text"
                 value={b}
                 onChange={(e) => setB(e.target.value)}
               />
@@ -282,8 +298,7 @@ export function IntegrationMethod() {
               <Label htmlFor="integration-n">Subintervalos (n)</Label>
               <Input
                 id="integration-n"
-                type="number"
-                min={1}
+                type="text"
                 value={n}
                 onChange={(e) => setN(e.target.value)}
               />

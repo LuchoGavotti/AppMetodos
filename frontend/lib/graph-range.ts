@@ -50,14 +50,14 @@ export function getAutoViewBox({
       const x = minX + i * dx;
       const y = evaluate(fn, x);
       if (Number.isFinite(y)) {
-        ys.push(clamp(y, -1000, 1000));
+        ys.push(clamp(y, -100000, 100000));
       }
     }
   }
 
   for (const p of points) {
     if (Number.isFinite(p.y)) {
-      ys.push(clamp(p.y, -1000, 1000));
+      ys.push(clamp(p.y, -100000, 100000));
     }
   }
 
@@ -71,14 +71,14 @@ export function getAutoViewBox({
   const sortedYs = [...ys].sort((a, b) => a - b);
 
   // Ignore extreme spikes from asymptotes so the plotted curve remains readable.
-  const qLow = quantile(sortedYs, 0.05);
-  const qHigh = quantile(sortedYs, 0.95);
+  const qLow = quantile(sortedYs, 0.01);
+  const qHigh = quantile(sortedYs, 0.99);
   const minY = Number.isFinite(qLow) ? qLow : Math.min(...sortedYs);
   const maxY = Number.isFinite(qHigh) ? qHigh : Math.max(...sortedYs);
   const spread = Math.max(maxY - minY, 1);
   const yPad = spread * 0.15;
-  const yLow = clamp(minY - yPad, -1200, 1200);
-  const yHigh = clamp(maxY + yPad, -1200, 1200);
+  const yLow = clamp(minY - yPad, -120000, 120000);
+  const yHigh = clamp(maxY + yPad, -120000, 120000);
 
   return { x: viewX, y: [yLow, yHigh] };
 }

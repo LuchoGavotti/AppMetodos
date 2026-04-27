@@ -18,6 +18,7 @@ import { TheoryModal, LaTeX } from "./theory-modal";
 import { ExpressionKeyboard } from "./expression-keyboard";
 import { api } from "@/lib/api";
 import { getAutoViewBox } from "@/lib/graph-range";
+import { parseIntegerExpression, parseNumericExpression, parseNumericExpressionSafe } from "@/lib/numeric-expression";
 import type { BisectionResponse, APIError } from "@/types/methods";
 import { Play, Loader2 } from "lucide-react";
 
@@ -31,11 +32,6 @@ const THEORY_FORMULAS = [
     label: "Teorema de Bolzano",
     latex: "f(a) \\cdot f(b) < 0 \\implies \\exists c \\in (a,b) : f(c) = 0",
     description: "Si f es continua en [a,b] y f(a) y f(b) tienen signos opuestos, existe al menos una raiz en (a,b).",
-  },
-  {
-    label: "Cota del Error",
-    latex: "|p - c_n| \\leq \\frac{b - a}{2^{n+1}}",
-    description: "El error esta acotado por el ancho del intervalo dividido por 2^(n+1).",
   },
 ];
 
@@ -58,12 +54,17 @@ export function BisectionMethod() {
     setIsLoading(true);
 
     try {
+      const aValue = parseNumericExpression(a, "Limite inferior (a)");
+      const bValue = parseNumericExpression(b, "Limite superior (b)");
+      const toleranceValue = parseNumericExpression(tolerance, "Tolerancia");
+      const maxIterationsValue = parseIntegerExpression(maxIterations, "Iteraciones maximas", 1);
+
       const response = await api.bisection({
         function: func,
-        a: parseFloat(a),
-        b: parseFloat(b),
-        tolerance: parseFloat(tolerance),
-        max_iterations: parseInt(maxIterations),
+        a: aValue,
+        b: bValue,
+        tolerance: toleranceValue,
+        max_iterations: maxIterationsValue,
         error_type: errorType,
       });
       setResult(response);
@@ -102,8 +103,8 @@ export function BisectionMethod() {
     : [];
 
   // Add interval bounds
-  const aNum = parseFloat(a);
-  const bNum = parseFloat(b);
+  const aNum = parseNumericExpressionSafe(a);
+  const bNum = parseNumericExpressionSafe(b);
   if (!isNaN(aNum) && !isNaN(bNum)) {
     graphPoints.push({ x: aNum, y: 0, color: "#f59e0b" });
     graphPoints.push({ x: bNum, y: 0, color: "#f59e0b" });
@@ -116,6 +117,15 @@ export function BisectionMethod() {
     points: graphPoints.map((p) => ({ x: p.x, y: p.y })),
     defaultY: [-10, 10],
   });
+
+  const realRootDetail = result?.real_root_latex ? (
+    <div className="space-y-1">
+      <div>
+        <LaTeX math={`x = ${result.real_root_latex}`} />
+      </div>
+      <div>Aproximacion decimal: {result.real_root_exact}</div>
+    </div>
+  ) : null;
 
   return (
     <MethodContainer
@@ -140,6 +150,7 @@ export function BisectionMethod() {
           ? `No convergio en ${maxIterations} iteraciones. Aproximacion actual: ${result.root}`
           : null
       }
+      resultDetail={realRootDetail}
       isLoading={isLoading}
       inputPanel={
         <form onSubmit={handleSubmit} className="space-y-4">
@@ -166,8 +177,7 @@ export function BisectionMethod() {
               <Label htmlFor="a">Limite inferior (a)</Label>
               <Input
                 id="a"
-                type="number"
-                step="any"
+                type="text"
                 value={a}
                 onChange={(e) => setA(e.target.value)}
               />
@@ -176,8 +186,7 @@ export function BisectionMethod() {
               <Label htmlFor="b">Limite superior (b)</Label>
               <Input
                 id="b"
-                type="number"
-                step="any"
+                type="text"
                 value={b}
                 onChange={(e) => setB(e.target.value)}
               />
@@ -189,8 +198,7 @@ export function BisectionMethod() {
               <Label htmlFor="tolerance">Tolerancia</Label>
               <Input
                 id="tolerance"
-                type="number"
-                step="any"
+                type="text"
                 value={tolerance}
                 onChange={(e) => setTolerance(e.target.value)}
               />
@@ -199,7 +207,7 @@ export function BisectionMethod() {
               <Label htmlFor="maxIterations">Iteraciones maximas</Label>
               <Input
                 id="maxIterations"
-                type="number"
+                type="text"
                 value={maxIterations}
                 onChange={(e) => setMaxIterations(e.target.value)}
               />

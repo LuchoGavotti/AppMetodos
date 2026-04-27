@@ -18,6 +18,7 @@ import { TheoryModal, LaTeX } from "./theory-modal";
 import { ExpressionKeyboard } from "./expression-keyboard";
 import { api } from "@/lib/api";
 import { getAutoViewBox } from "@/lib/graph-range";
+import { parseIntegerExpression, parseNumericExpression, parseNumericExpressionSafe } from "@/lib/numeric-expression";
 import type { FixedPointResponse, APIError } from "@/types/methods";
 import { Play, Loader2 } from "lucide-react";
 
@@ -31,11 +32,6 @@ const THEORY_FORMULAS = [
     label: "Condicion de Convergencia",
     latex: "|g'(x)| < 1 \\text{ near the root}",
     description: "El metodo converge si la derivada de g(x) tiene magnitud menor que 1 cerca del punto fijo.",
-  },
-  {
-    label: "Cota del Error",
-    latex: "|x_n - p| \\leq \\frac{k^n}{1-k}|x_1 - x_0|, \\quad k = \\max|g'(x)|",
-    description: "El error decrece geometricamente con razon k.",
   },
 ];
 
@@ -57,11 +53,15 @@ export function FixedPointMethod() {
     setIsLoading(true);
 
     try {
+      const x0Value = parseNumericExpression(x0, "Valor inicial (x0)");
+      const toleranceValue = parseNumericExpression(tolerance, "Tolerancia");
+      const maxIterationsValue = parseIntegerExpression(maxIterations, "Iteraciones maximas", 1);
+
       const response = await api.fixedPoint({
         g_function: gFunc,
-        x0: parseFloat(x0),
-        tolerance: parseFloat(tolerance),
-        max_iterations: parseInt(maxIterations),
+        x0: x0Value,
+        tolerance: toleranceValue,
+        max_iterations: maxIterationsValue,
         error_type: errorType,
       });
       setResult(response);
@@ -105,18 +105,39 @@ export function FixedPointMethod() {
     : [];
 
   // Add starting point
-  const x0Num = parseFloat(x0);
+  const x0Num = parseNumericExpressionSafe(x0);
   if (!isNaN(x0Num)) {
     graphPoints.unshift({ x: x0Num, y: x0Num, color: "#f59e0b" });
   }
 
+  const finiteXs = graphPoints
+    .map((p) => p.x)
+    .filter((v) => Number.isFinite(v));
+  if (Number.isFinite(x0Num)) {
+    finiteXs.push(x0Num);
+  }
+
+  const minObservedX = finiteXs.length > 0 ? Math.min(...finiteXs) : -1;
+  const maxObservedX = finiteXs.length > 0 ? Math.max(...finiteXs) : 1;
+  const centerX = (minObservedX + maxObservedX) / 2;
+  const halfSpanX = Math.max(20, (maxObservedX - minObservedX) * 1.5 + 3);
+
   const viewBox = getAutoViewBox({
-    xMin: -5,
-    xMax: 5,
+    xMin: centerX - halfSpanX,
+    xMax: centerX + halfSpanX,
     functions: graphFunctions.map((f) => f.expr),
     points: graphPoints.map((p) => ({ x: p.x, y: p.y })),
     defaultY: [-5, 5],
   });
+
+  const realRootDetail = result?.real_root_latex ? (
+    <div className="space-y-1">
+      <div>
+        <LaTeX math={`x = ${result.real_root_latex}`} />
+      </div>
+      <div>Aproximacion decimal: {result.real_root_exact}</div>
+    </div>
+  ) : null;
 
   return (
     <MethodContainer
@@ -137,6 +158,7 @@ export function FixedPointMethod() {
           ? `Convergio a la raiz x = ${result.root} en ${result.iterations.length} iteraciones`
           : null
       }
+      resultDetail={realRootDetail}
       isLoading={isLoading}
       inputPanel={
         <form onSubmit={handleSubmit} className="space-y-4">
@@ -164,8 +186,7 @@ export function FixedPointMethod() {
             <Label htmlFor="x0">Valor inicial (x0)</Label>
             <Input
               id="x0"
-              type="number"
-              step="any"
+              type="text"
               value={x0}
               onChange={(e) => setX0(e.target.value)}
             />
@@ -176,8 +197,7 @@ export function FixedPointMethod() {
               <Label htmlFor="tolerance">Tolerancia</Label>
               <Input
                 id="tolerance"
-                type="number"
-                step="any"
+                type="text"
                 value={tolerance}
                 onChange={(e) => setTolerance(e.target.value)}
               />
@@ -186,7 +206,7 @@ export function FixedPointMethod() {
               <Label htmlFor="maxIterations">Iteraciones maximas</Label>
               <Input
                 id="maxIterations"
-                type="number"
+                type="text"
                 value={maxIterations}
                 onChange={(e) => setMaxIterations(e.target.value)}
               />

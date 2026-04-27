@@ -18,21 +18,22 @@ import { TheoryModal, LaTeX } from "./theory-modal";
 import { ExpressionKeyboard } from "./expression-keyboard";
 import { api } from "@/lib/api";
 import { getAutoViewBox } from "@/lib/graph-range";
+import { parseNumericExpression, parseNumericExpressionSafe } from "@/lib/numeric-expression";
 import type { APIError, DerivativeResponse } from "@/types/methods";
 import { Loader2, Play } from "lucide-react";
 
 const THEORY_FORMULAS = [
   {
     label: "Diferencia Hacia Adelante",
-    latex: "f'(x)\\approx\\frac{f(x+h)-f(x)}{h}",
+    latex: "f'(x)\\approx\\frac{f(x+h)-f(x)}{h}, f''(x)\\approx\\frac{f(x+2h)-2f(x+h)+f(x)}{h^2}",
   },
   {
     label: "Diferencia Hacia Atras",
-    latex: "f'(x)\\approx\\frac{f(x)-f(x-h)}{h}",
+    latex: "f'(x)\\approx\\frac{f(x)-f(x-h)}{h}, f''(x)\\approx\\frac{f(x)-2f(x-h)+f(x-2h)}{h^2}",
   },
   {
     label: "Diferencia Central",
-    latex: "f'(x)\\approx\\frac{f(x+h)-f(x-h)}{2h}",
+    latex: "f'(x)\\approx\\frac{f(x+h)-f(x-h)}{2h}, f''(x)\\approx\\frac{f(x+h)-2f(x)+f(x-h)}{h^2}",
   },
 ];
 
@@ -54,10 +55,13 @@ export function DerivativeMethod() {
     setError(null);
     setIsLoading(true);
     try {
+      const x0Value = parseNumericExpression(x0, "x0");
+      const hValue = parseNumericExpression(h, "Paso h");
+
       const response = await api.derivative({
         function: func,
-        x0: Number(x0),
-        h: Number(h),
+        x0: x0Value,
+        h: hValue,
         method,
       });
       setResult(response);
@@ -72,10 +76,16 @@ export function DerivativeMethod() {
     }
   };
 
-  const x0Num = Number(x0);
-  const hNum = Number(h);
-  const xLeft = Number.isFinite(x0Num) && Number.isFinite(hNum) ? x0Num - 5 * hNum : -5;
-  const xRight = Number.isFinite(x0Num) && Number.isFinite(hNum) ? x0Num + 5 * hNum : 5;
+  const x0Num = parseNumericExpressionSafe(x0);
+  const hNum = parseNumericExpressionSafe(h);
+  const localLeft = Number.isFinite(x0Num) && Number.isFinite(hNum) ? x0Num - 5 * hNum : -1;
+  const localRight = Number.isFinite(x0Num) && Number.isFinite(hNum) ? x0Num + 5 * hNum : 1;
+  const minObservedX = Math.min(localLeft, localRight, Number.isFinite(x0Num) ? x0Num : 0);
+  const maxObservedX = Math.max(localLeft, localRight, Number.isFinite(x0Num) ? x0Num : 0);
+  const centerX = (minObservedX + maxObservedX) / 2;
+  const halfSpanX = Math.max(20, (maxObservedX - minObservedX) * 1.5 + 3);
+  const xLeft = centerX - halfSpanX;
+  const xRight = centerX + halfSpanX;
   const graphPoints =
     result?.points_used.map((pt) => ({ x: pt.x, y: pt.y, color: "#f59e0b" })) || [];
   const viewBox = getAutoViewBox({
@@ -120,8 +130,7 @@ export function DerivativeMethod() {
               <Label htmlFor="derivative-x0">x₀</Label>
               <Input
                 id="derivative-x0"
-                type="number"
-                step="any"
+                type="text"
                 value={x0}
                 onChange={(e) => setX0(e.target.value)}
               />
@@ -130,8 +139,7 @@ export function DerivativeMethod() {
               <Label htmlFor="derivative-h">Paso h</Label>
               <Input
                 id="derivative-h"
-                type="number"
-                step="any"
+                type="text"
                 value={h}
                 onChange={(e) => setH(e.target.value)}
               />

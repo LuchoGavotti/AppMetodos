@@ -17,6 +17,7 @@ interface MethodContainerProps {
   error?: string | null;
   warning?: string | null;
   success?: string | null;
+  resultDetail?: React.ReactNode;
   isLoading?: boolean;
   className?: string;
 }
@@ -32,6 +33,7 @@ export function MethodContainer({
   error,
   warning,
   success,
+  resultDetail,
   isLoading,
   className,
 }: MethodContainerProps) {
@@ -66,6 +68,12 @@ export function MethodContainer({
           <CheckCircle2 className="size-4 text-green-500" />
           <AlertTitle>Exito</AlertTitle>
           <AlertDescription>{success}</AlertDescription>
+        </Alert>
+      )}
+      {resultDetail && (
+        <Alert>
+          <AlertTitle>Raiz Real</AlertTitle>
+          <AlertDescription>{resultDetail}</AlertDescription>
         </Alert>
       )}
 

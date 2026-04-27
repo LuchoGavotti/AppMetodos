@@ -112,6 +112,71 @@ export function MathGraph({
   const xSpan = Math.abs(viewBox.x[1] - viewBox.x[0]);
   const ySpan = Math.abs(viewBox.y[1] - viewBox.y[0]);
 
+  const plottedFunctionSegments = React.useMemo(() => {
+    const minX = Math.min(viewBox.x[0], viewBox.x[1]);
+    const maxX = Math.max(viewBox.x[0], viewBox.x[1]);
+    const sampleCount = 700;
+    const dx = (maxX - minX) / sampleCount;
+
+    if (!Number.isFinite(dx) || dx <= 0) {
+      return [] as Array<{
+        key: string;
+        point1: [number, number];
+        point2: [number, number];
+        color: string;
+        opacity?: number;
+      }>;
+    }
+
+    const isDrawable = (value: number) => Number.isFinite(value) && Math.abs(value) <= 1e14;
+
+    const segments: Array<{
+      key: string;
+      point1: [number, number];
+      point2: [number, number];
+      color: string;
+      opacity?: number;
+    }> = [];
+
+    functions.forEach((fn, fnIndex) => {
+      const color = fn.color || defaultColors[fnIndex % defaultColors.length];
+
+      for (let i = 0; i < sampleCount; i++) {
+        const x1 = minX + i * dx;
+        const x2 = x1 + dx;
+
+        let y1 = NaN;
+        let y2 = NaN;
+
+        try {
+          y1 = evaluate(fn.expr, x1);
+          y2 = evaluate(fn.expr, x2);
+        } catch {
+          continue;
+        }
+
+        if (!isDrawable(y1) || !isDrawable(y2)) {
+          continue;
+        }
+
+        // Avoid connecting across near-vertical jumps/asymptotes.
+        if (Math.abs(y2 - y1) > Math.max(ySpan * 20, 500)) {
+          continue;
+        }
+
+        segments.push({
+          key: `fn-seg-${fnIndex}-${i}`,
+          point1: [x1, y1],
+          point2: [x2, y2],
+          color,
+          opacity: fn.opacity,
+        });
+      }
+    });
+
+    return segments;
+  }, [functions, viewBox.x, viewBox.y, ySpan]);
+
   // Keep around 6-10 labeled ticks visible, even when range is very large.
   const xStep = getNiceStep(xSpan / 8);
   const yStep = getNiceStep(ySpan / 7);
@@ -196,19 +261,14 @@ export function MathGraph({
           />
         ))}
 
-        {/* Render functions */}
-        {functions.map((fn, i) => (
-          <Plot.OfX
-            key={`fn-${i}`}
-            y={(x) => {
-              try {
-                return evaluate(fn.expr, x);
-              } catch {
-                return NaN;
-              }
-            }}
-            color={fn.color || defaultColors[i % defaultColors.length]}
-            opacity={fn.opacity}
+        {/* Render functions as segments so invalid/extreme values only cut local pieces */}
+        {plottedFunctionSegments.map((segment) => (
+          <Line.Segment
+            key={segment.key}
+            point1={segment.point1}
+            point2={segment.point2}
+            color={segment.color}
+            opacity={segment.opacity}
           />
         ))}
 

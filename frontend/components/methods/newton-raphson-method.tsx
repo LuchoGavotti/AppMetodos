@@ -11,6 +11,7 @@ import { TheoryModal, LaTeX } from "./theory-modal";
 import { ExpressionKeyboard } from "./expression-keyboard";
 import { api } from "@/lib/api";
 import { getAutoViewBox } from "@/lib/graph-range";
+import { parseIntegerExpression, parseNumericExpression, parseNumericExpressionSafe } from "@/lib/numeric-expression";
 import type { APIError, NewtonRaphsonResponse } from "@/types/methods";
 import { Loader2, Play } from "lucide-react";
 
@@ -22,6 +23,11 @@ const THEORY_FORMULAS = [
   {
     label: "Recta Tangente",
     latex: "y=f(x_n)+f'(x_n)(x-x_n)",
+  },
+  {
+    label: "Condiciones",
+    latex:
+      "\\begin{array}{r l}\\bullet & f'(x_n)\\text{ existe}\\\\\\bullet & f'(x_n)\\neq 0\\\\\\bullet & x_0\\text{ cerca de la raiz}\\end{array}",
   },
 ];
 
@@ -42,11 +48,15 @@ export function NewtonRaphsonMethod() {
     setIsLoading(true);
 
     try {
+      const x0Value = parseNumericExpression(x0, "Valor inicial x0");
+      const toleranceValue = parseNumericExpression(tolerance, "Tolerancia");
+      const maxIterationsValue = parseIntegerExpression(maxIterations, "Iteraciones maximas", 1);
+
       const response = await api.newtonRaphson({
         function: func,
-        x0: Number(x0),
-        tolerance: Number(tolerance),
-        max_iterations: Number(maxIterations),
+        x0: x0Value,
+        tolerance: toleranceValue,
+        max_iterations: maxIterationsValue,
       });
       setResult(response);
     } catch (err) {
@@ -81,13 +91,35 @@ export function NewtonRaphsonMethod() {
       color: i === result.iterations.length - 1 ? "#22c55e" : "#8b5cf6",
     })) || [];
 
+  const x0Num = parseNumericExpressionSafe(x0);
+  const finiteXs = graphPoints
+    .map((p) => p.x)
+    .filter((v) => Number.isFinite(v));
+  if (Number.isFinite(x0Num)) {
+    finiteXs.push(x0Num);
+  }
+
+  const minObservedX = finiteXs.length > 0 ? Math.min(...finiteXs) : -1;
+  const maxObservedX = finiteXs.length > 0 ? Math.max(...finiteXs) : 1;
+  const centerX = (minObservedX + maxObservedX) / 2;
+  const halfSpanX = Math.max(20, (maxObservedX - minObservedX) * 1.5 + 3);
+
   const viewBox = getAutoViewBox({
-    xMin: -5,
-    xMax: 5,
+    xMin: centerX - halfSpanX,
+    xMax: centerX + halfSpanX,
     functions: func ? [func] : [],
     points: graphPoints.map((p) => ({ x: p.x, y: p.y })),
     defaultY: [-10, 10],
   });
+
+  const realRootDetail = result?.real_root_latex ? (
+    <div className="space-y-1">
+      <div>
+        <LaTeX math={`x = ${result.real_root_latex}`} />
+      </div>
+      <div>Aproximacion decimal: {result.real_root_exact}</div>
+    </div>
+  ) : null;
 
   return (
     <MethodContainer
@@ -112,6 +144,7 @@ export function NewtonRaphsonMethod() {
           ? `No convergio en ${maxIterations} iteraciones.`
           : null
       }
+      resultDetail={realRootDetail}
       isLoading={isLoading}
       inputPanel={
         <form onSubmit={handleSubmit} className="space-y-4">
@@ -141,8 +174,7 @@ export function NewtonRaphsonMethod() {
             <Label htmlFor="newton-x0">Valor inicial x0</Label>
             <Input
               id="newton-x0"
-              type="number"
-              step="any"
+              type="text"
               value={x0}
               onChange={(e) => setX0(e.target.value)}
             />
@@ -153,8 +185,7 @@ export function NewtonRaphsonMethod() {
               <Label htmlFor="newton-tol">Tolerancia</Label>
               <Input
                 id="newton-tol"
-                type="number"
-                step="any"
+                type="text"
                 value={tolerance}
                 onChange={(e) => setTolerance(e.target.value)}
               />
@@ -163,8 +194,7 @@ export function NewtonRaphsonMethod() {
               <Label htmlFor="newton-max">Iteraciones maximas</Label>
               <Input
                 id="newton-max"
-                type="number"
-                min={1}
+                type="text"
                 value={maxIterations}
                 onChange={(e) => setMaxIterations(e.target.value)}
               />

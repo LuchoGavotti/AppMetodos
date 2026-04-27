@@ -1,3 +1,5 @@
+import math
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -88,12 +90,14 @@ class DifferentialEquationRequest(BaseModel):
     method: Literal["euler", "improved_euler", "runge_kutta"] = Field(default="runge_kutta")
 
 
-def parse_function(func_str: str):
+def parse_function(func_str: str, apply_real_odd_roots: bool = True):
     """Parse a string function into a sympy expression."""
     x = sp.Symbol('x')
     try:
         normalized = normalize_function_aliases(func_str)
         expr = sp.sympify(normalized)
+        if apply_real_odd_roots:
+            expr = enforce_real_odd_roots(expr)
         return expr, x
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid function: {str(e)}")
@@ -105,6 +109,7 @@ def parse_ode_function(func_str: str):
     try:
         normalized = normalize_function_aliases(func_str)
         expr = sp.sympify(normalized)
+        expr = enforce_real_odd_roots(expr)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid differential equation: {str(e)}")
 
@@ -244,12 +249,25 @@ def normalize_function_aliases(func_str: str) -> str:
         r"\bsen\s*\(": "sin(",
         r"\btg\s*\(": "tan(",
         r"\braiz\s*\(": "sqrt(",
+        r"\be\b": "E",
     }
 
     for pattern, replacement in replacements.items():
         normalized = re.sub(pattern, replacement, normalized, flags=re.IGNORECASE)
 
     return normalized
+
+
+def enforce_real_odd_roots(expr: sp.Expr) -> sp.Expr:
+    """Interpret powers like a**(1/3) as real roots over R to avoid complex branches."""
+    return expr.replace(
+        lambda e: isinstance(e, sp.Pow)
+        and getattr(e, "exp", None) is not None
+        and e.exp.is_Rational
+        and e.exp.p == 1
+        and int(e.exp.q) % 2 == 1,
+        lambda e: sp.real_root(e.base, int(e.exp.q)),
+    )
 
 
 def evaluate_func(expr, x_sym, x_val: float) -> float:
@@ -261,6 +279,30 @@ def evaluate_func(expr, x_sym, x_val: float) -> float:
         return result
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Cannot evaluate function at x={x_val}: {str(e)}")
+
+
+def evaluate_abs_derivative_at(expr, x_sym, x_val: float) -> tuple[sp.Expr, float]:
+    """Evaluate |d/dx expr| at x_val using symbolic eval with numeric fallback."""
+    dg_expr = sp.diff(expr, x_sym)
+
+    try:
+        dg_val = float(dg_expr.subs(x_sym, x_val).evalf())
+        if np.isnan(dg_val) or np.isinf(dg_val):
+            raise ValueError("Derivative evaluation resulted in NaN or Inf")
+        return dg_expr, abs(dg_val)
+    except Exception:
+        # Fallback for expressions where symbolic derivative does not simplify to a float
+        # (e.g., real_root-based expressions with piecewise/branch-sensitive derivatives).
+        h = max(1e-6, 1e-6 * max(1.0, abs(x_val)))
+        f_plus = evaluate_func(expr, x_sym, x_val + h)
+        f_minus = evaluate_func(expr, x_sym, x_val - h)
+        dg_val = (f_plus - f_minus) / (2.0 * h)
+        if np.isnan(dg_val) or np.isinf(dg_val):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot evaluate derivative at x={x_val}: numerical derivative resulted in NaN/Inf"
+            )
+        return dg_expr, abs(float(dg_val))
 
 
 def make_rng(seed: Optional[int]) -> np.random.Generator:
@@ -392,6 +434,113 @@ def maybe_exact_integral(expr, symbols, bounds_array: np.ndarray):
     return None
 
 
+def polynomial_termwise_form(expr: sp.Expr, x_sym: sp.Symbol, numeric: bool = False) -> sp.Expr:
+    """Return expanded polynomial as a sum of independent coefficient terms."""
+    poly = sp.Poly(sp.expand(expr), x_sym)
+    coeffs = poly.all_coeffs()
+    degree = poly.degree()
+
+    terms = []
+    for idx, coeff in enumerate(coeffs):
+        power = degree - idx
+        if coeff == 0:
+            continue
+
+        coeff_repr = sp.N(coeff, 10) if numeric else coeff
+        term = coeff_repr if power == 0 else coeff_repr * x_sym**power
+        terms.append(term)
+
+    if not terms:
+        return sp.Integer(0)
+
+    # Keep explicit term-by-term structure in LaTeX (avoid refactoring/recombining).
+    return sp.Add(*terms, evaluate=False)
+
+
+def polynomial_termwise_latex(expr: sp.Expr, x_sym: sp.Symbol, numeric: bool = False, precision: int = 10) -> str:
+    """Render polynomial as coefficient-by-coefficient sum without global factoring."""
+    poly = sp.Poly(sp.expand(expr), x_sym)
+    coeffs = poly.all_coeffs()
+    degree = poly.degree()
+    x_latex = sp.latex(x_sym)
+
+    parts: list[str] = []
+    for idx, coeff in enumerate(coeffs):
+        power = degree - idx
+        if coeff == 0:
+            continue
+
+        coeff_repr = sp.N(coeff, precision) if numeric else sp.simplify(coeff)
+        is_negative = bool(coeff_repr.could_extract_minus_sign())
+        abs_coeff = -coeff_repr if is_negative else coeff_repr
+
+        if numeric:
+            coeff_float = float(sp.N(abs_coeff, precision))
+            coeff_latex = f"{coeff_float:.10g}"
+            if "e" not in coeff_latex and "E" not in coeff_latex and "." not in coeff_latex:
+                coeff_latex += ".0"
+        else:
+            coeff_latex = sp.latex(abs_coeff)
+        is_one = abs_coeff == 1
+
+        if power == 0:
+            term_latex = coeff_latex
+        elif power == 1:
+            term_latex = x_latex if is_one else f"{coeff_latex} {x_latex}"
+        else:
+            x_power_latex = f"{x_latex}^{{{power}}}"
+            term_latex = x_power_latex if is_one else f"{coeff_latex} {x_power_latex}"
+
+        if not parts:
+            parts.append(f"- {term_latex}" if is_negative else term_latex)
+        else:
+            parts.append(f" - {term_latex}" if is_negative else f" + {term_latex}")
+
+    return "".join(parts) if parts else "0"
+
+
+def try_real_root_solution(expr, x_sym, approx_root: float):
+    """Try to get a real symbolic root near approx_root for display purposes."""
+    candidates = []
+
+    try:
+        real_set = sp.solveset(sp.Eq(expr, 0), x_sym, domain=sp.S.Reals)
+        if isinstance(real_set, sp.FiniteSet):
+            candidates.extend(list(real_set))
+    except Exception:
+        pass
+
+    if not candidates:
+        try:
+            solved = sp.solve(sp.Eq(expr, 0), x_sym)
+            if isinstance(solved, (list, tuple)):
+                candidates.extend(solved)
+        except Exception:
+            pass
+
+    real_candidates = []
+    for cand in candidates:
+        try:
+            cand_eval = sp.N(cand, 30)
+            imag = float(sp.im(cand_eval))
+            if abs(imag) > 1e-10:
+                continue
+            val = float(sp.re(cand_eval))
+            if np.isfinite(val):
+                real_candidates.append((cand, val))
+        except Exception:
+            continue
+
+    if not real_candidates:
+        return None
+
+    best_expr, best_val = min(real_candidates, key=lambda item: abs(item[1] - approx_root))
+    return {
+        "real_root_exact": round(best_val, 10),
+        "real_root_latex": sp.latex(sp.simplify(best_expr)),
+    }
+
+
 @app.get("/health")
 async def health():
     return {"status": "ok", "service": "numerical-methods"}
@@ -434,12 +583,14 @@ async def bisection(req: BisectionRequest):
         })
         
         if abs(fc) < req.tolerance or error < req.tolerance:
+            real_root_payload = try_real_root_solution(expr, x, c) or {}
             return {
                 "root": round(c, 10),
                 "iterations": iterations,
                 "converged": True,
                 "function": req.function,
-                "f_expr_latex": sp.latex(expr)
+                "f_expr_latex": sp.latex(expr),
+                **real_root_payload,
             }
         
         if fa * fc < 0:
@@ -449,12 +600,15 @@ async def bisection(req: BisectionRequest):
             a = c
             fa = fc
     
+    approx_root = (a + b) / 2.0
+    real_root_payload = try_real_root_solution(expr, x, approx_root) or {}
     return {
         "root": round((a + b) / 2.0, 10),
         "iterations": iterations,
         "converged": False,
         "function": req.function,
-        "f_expr_latex": sp.latex(expr)
+        "f_expr_latex": sp.latex(expr),
+        **real_root_payload,
     }
 
 
@@ -462,10 +616,11 @@ async def bisection(req: BisectionRequest):
 async def fixed_point(req: FixedPointRequest):
     """Fixed point iteration method."""
     g_expr, x = parse_function(req.g_function)
-    dg_expr = sp.diff(g_expr, x)
+    g_expr_display, x_display = parse_function(req.g_function, apply_real_odd_roots=False)
+    dg_expr_display = sp.diff(g_expr_display, x_display)
+    dg_expr, dg_x0 = evaluate_abs_derivative_at(g_expr, x, req.x0)
     
     # Check convergence condition at x0
-    dg_x0 = abs(float(dg_expr.subs(x, req.x0).evalf()))
     convergence_warning = None
     if dg_x0 >= 1:
         convergence_warning = f"|g'(x0)| = {dg_x0:.6f} >= 1. Method may not converge."
@@ -490,28 +645,32 @@ async def fixed_point(req: FixedPointRequest):
         })
         
         if error < req.tolerance:
+            real_root_payload = try_real_root_solution(g_expr_display - x_display, x_display, x_next) or {}
             return {
                 "root": round(x_next, 10),
                 "iterations": iterations,
                 "converged": True,
                 "g_function": req.g_function,
-                "g_expr_latex": sp.latex(g_expr),
-                "dg_expr_latex": sp.latex(dg_expr),
+                "g_expr_latex": sp.latex(g_expr_display),
+                "dg_expr_latex": sp.latex(dg_expr_display),
                 "dg_x0": round(dg_x0, 10),
-                "convergence_warning": convergence_warning
+                "convergence_warning": convergence_warning,
+                **real_root_payload,
             }
         
         x_curr = x_next
     
+    real_root_payload = try_real_root_solution(g_expr_display - x_display, x_display, x_curr) or {}
     return {
         "root": round(x_curr, 10),
         "iterations": iterations,
         "converged": False,
         "g_function": req.g_function,
-        "g_expr_latex": sp.latex(g_expr),
-        "dg_expr_latex": sp.latex(dg_expr),
+        "g_expr_latex": sp.latex(g_expr_display),
+        "dg_expr_latex": sp.latex(dg_expr_display),
         "dg_x0": round(dg_x0, 10),
-        "convergence_warning": convergence_warning
+        "convergence_warning": convergence_warning,
+        **real_root_payload,
     }
 
 
@@ -519,7 +678,14 @@ async def fixed_point(req: FixedPointRequest):
 async def aitken(req: AitkenRequest):
     """Aitken's acceleration method."""
     g_expr, x = parse_function(req.g_function)
-    dg_expr = sp.diff(g_expr, x)
+    g_expr_display, x_display = parse_function(req.g_function, apply_real_odd_roots=False)
+    dg_expr_display = sp.diff(g_expr_display, x_display)
+    dg_expr, dg_x0 = evaluate_abs_derivative_at(g_expr, x, req.x0)
+
+    # Check convergence condition at x0
+    convergence_warning = None
+    if dg_x0 >= 1:
+        convergence_warning = f"|g'(x0)| = {dg_x0:.6f} >= 1. Method may not converge."
     
     x0 = req.x0
     iterations = []
@@ -527,13 +693,38 @@ async def aitken(req: AitkenRequest):
     for i in range(req.max_iterations):
         x1 = evaluate_func(g_expr, x, x0)
         x2 = evaluate_func(g_expr, x, x1)
+
+        # If the fixed-point sequence is already stationary, accept convergence.
+        fp_error = abs(x2 - x1)
         
         denominator = x2 - 2*x1 + x0
         if abs(denominator) < 1e-15:
-            raise HTTPException(
-                status_code=400,
-                detail="Aitken acceleration failed: denominator too small"
-            )
+            iterations.append({
+                "iteration": i + 1,
+                "x_n": round(x0, 10),
+                "x_n1": round(x1, 10),
+                "x_n2": round(x2, 10),
+                "x_accel": round(x2, 10),
+                "error": round(fp_error, 10)
+            })
+
+            if fp_error < req.tolerance:
+                real_root_payload = try_real_root_solution(g_expr_display - x_display, x_display, x2) or {}
+                return {
+                    "root": round(x2, 10),
+                    "iterations": iterations,
+                    "converged": True,
+                    "g_function": req.g_function,
+                    "g_expr_latex": sp.latex(g_expr_display),
+                    "dg_expr_latex": sp.latex(dg_expr_display),
+                    "dg_x0": round(dg_x0, 10),
+                    "convergence_warning": convergence_warning,
+                    **real_root_payload,
+                }
+
+            # No usable acceleration this step; continue with plain fixed-point iterate.
+            x0 = x2
+            continue
         
         x_accel = x0 - (x1 - x0)**2 / denominator
         error = abs((x_accel - x0) / x_accel) if x_accel != 0 else float('inf')
@@ -548,24 +739,32 @@ async def aitken(req: AitkenRequest):
         })
         
         if error < req.tolerance:
+            real_root_payload = try_real_root_solution(g_expr_display - x_display, x_display, x_accel) or {}
             return {
                 "root": round(x_accel, 10),
                 "iterations": iterations,
                 "converged": True,
                 "g_function": req.g_function,
-                "g_expr_latex": sp.latex(g_expr),
-                "dg_expr_latex": sp.latex(dg_expr)
+                "g_expr_latex": sp.latex(g_expr_display),
+                "dg_expr_latex": sp.latex(dg_expr_display),
+                "dg_x0": round(dg_x0, 10),
+                "convergence_warning": convergence_warning,
+                **real_root_payload,
             }
         
         x0 = x_accel
     
+    real_root_payload = try_real_root_solution(g_expr_display - x_display, x_display, x0) or {}
     return {
         "root": round(x0, 10),
         "iterations": iterations,
         "converged": False,
         "g_function": req.g_function,
-        "g_expr_latex": sp.latex(g_expr),
-        "dg_expr_latex": sp.latex(dg_expr)
+        "g_expr_latex": sp.latex(g_expr_display),
+        "dg_expr_latex": sp.latex(dg_expr_display),
+        "dg_x0": round(dg_x0, 10),
+        "convergence_warning": convergence_warning,
+        **real_root_payload,
     }
 
 
@@ -614,6 +813,7 @@ async def newton_raphson(req: NewtonRaphsonRequest):
         })
         
         if error < req.tolerance:
+            real_root_payload = try_real_root_solution(f_expr, x, x_next) or {}
             return {
                 "root": round(x_next, 10),
                 "iterations": iterations,
@@ -621,11 +821,13 @@ async def newton_raphson(req: NewtonRaphsonRequest):
                 "converged": True,
                 "function": req.function,
                 "f_expr_latex": sp.latex(f_expr),
-                "df_expr_latex": sp.latex(df_expr)
+                "df_expr_latex": sp.latex(df_expr),
+                **real_root_payload,
             }
         
         x_curr = x_next
     
+    real_root_payload = try_real_root_solution(f_expr, x, x_curr) or {}
     return {
         "root": round(x_curr, 10),
         "iterations": iterations,
@@ -633,7 +835,8 @@ async def newton_raphson(req: NewtonRaphsonRequest):
         "converged": False,
         "function": req.function,
         "f_expr_latex": sp.latex(f_expr),
-        "df_expr_latex": sp.latex(df_expr)
+        "df_expr_latex": sp.latex(df_expr),
+        **real_root_payload,
     }
 
 
@@ -660,6 +863,9 @@ async def lagrange_interpolation(req: InterpolationRequest):
     points_xy = sorted(zip(req.x_values, req.y_values), key=lambda p: p[0])
     x_sorted = [float(p[0]) for p in points_xy]
     y_sorted = [float(p[1]) for p in points_xy]
+    symbolic_constants = [sp.pi, sp.E, sp.sqrt(2), sp.sqrt(3), sp.sqrt(5)]
+    x_exact = [sp.nsimplify(v, constants=symbolic_constants) for v in x_sorted]
+    y_exact = [sp.nsimplify(v, constants=symbolic_constants) for v in y_sorted]
     
     # Build Lagrange polynomial
     polynomial = 0
@@ -669,22 +875,30 @@ async def lagrange_interpolation(req: InterpolationRequest):
         Li = 1
         for j in range(n):
             if i != j:
-                Li *= (x - x_sorted[j]) / (x_sorted[i] - x_sorted[j])
+                Li *= (x - x_exact[j]) / (x_exact[i] - x_exact[j])
         
         Li_simplified = simplify_expr(Li)
-        weighted_term = simplify_expr(y_sorted[i] * Li_simplified)
+        weighted_term = simplify_expr(y_exact[i] * Li_simplified)
+        Li_termwise_exact = polynomial_termwise_latex(Li_simplified, x, numeric=False)
+        Li_termwise_numeric = polynomial_termwise_latex(Li_simplified, x, numeric=True)
+        weighted_term_exact = polynomial_termwise_latex(weighted_term, x, numeric=False)
+        weighted_term_numeric = polynomial_termwise_latex(weighted_term, x, numeric=True)
         basis_polynomials.append({
             "index": i,
             "L_i": sp.latex(Li_simplified),
             "L_i_expr": str(Li_simplified),
             "L_i_expr_plot": str(Li_simplified).replace("**", "^"),
+            "L_i_latex_exact": Li_termwise_exact,
+            "L_i_latex_numeric": Li_termwise_numeric,
             "term_latex": sp.latex(weighted_term),
             "term_expr": str(weighted_term),
             "term_expr_plot": str(weighted_term).replace("**", "^"),
+            "term_latex_exact": weighted_term_exact,
+            "term_latex_numeric": weighted_term_numeric,
             "point": {"x": x_sorted[i], "y": y_sorted[i]}
         })
         
-        polynomial += y_sorted[i] * Li
+        polynomial += y_exact[i] * Li
     
     polynomial = sp.expand(polynomial)
     polynomial_simplified = simplify_expr(polynomial)
@@ -727,21 +941,79 @@ async def lagrange_interpolation(req: InterpolationRequest):
         true_expr, true_x = parse_function(req.true_function)
         true_fn = sp.lambdify(true_x, true_expr, modules=["numpy"])
 
-        grid_x = np.linspace(x_min, x_max, 400)
-        local_errors = []
-        for xi in grid_x:
-            try:
-                true_y = float(true_fn(float(xi)))
-                poly_y = float(poly_fn(float(xi)))
-                if np.isfinite(true_y) and np.isfinite(poly_y):
-                    local_errors.append((float(xi), abs(true_y - poly_y)))
-            except Exception:
-                continue
+        n = len(req.x_values) - 1
 
-        global_max_error = None
-        at_x = None
-        if local_errors:
-            at_x, global_max_error = max(local_errors, key=lambda t: t[1])
+        # =========================
+        # ERROR GLOBAL (COTA TEORICA)
+        # =========================
+
+        try:
+            # Derivadas
+            f_n1 = sp.diff(true_expr, true_x, n + 1)
+            f_n2 = sp.diff(true_expr, true_x, n + 2)
+
+            # ---- MAX de |f^(n+1)(x)| ----
+            try:
+                critical_points_f = sp.solve(f_n2, true_x)
+            except:
+                critical_points_f = sp.nroots(f_n2)
+
+            critical_points_f = [
+                float(p.evalf())
+                for p in critical_points_f
+                if p.is_real and x_min <= float(p.evalf()) <= x_max
+            ]
+
+            eval_points_f = critical_points_f + [x_min, x_max]
+
+            M = 0
+            for xi in eval_points_f:
+                try:
+                    val = abs(float(f_n1.subs(true_x, xi).evalf()))
+                    if np.isfinite(val):
+                        M = max(M, val)
+                except:
+                    continue
+
+            # ---- PRODUCTORIA ----
+            w_expr = 1
+            for xi in req.x_values:
+                w_expr *= (true_x - xi)
+
+            w_prime = sp.diff(w_expr, true_x)
+
+            try:
+                critical_points_w = sp.solve(w_prime, true_x)
+            except:
+                critical_points_w = sp.nroots(w_prime)
+
+            critical_points_w = [
+                float(p.evalf())
+                for p in critical_points_w
+                if p.is_real and x_min <= float(p.evalf()) <= x_max
+            ]
+
+            eval_points_w = critical_points_w + [x_min, x_max]
+
+            W = 0
+            for xi in eval_points_w:
+                try:
+                    val = abs(float(w_expr.subs(true_x, xi).evalf()))
+                    if np.isfinite(val):
+                        W = max(W, val)
+                except:
+                    continue
+
+            global_max_error = (M / math.factorial(n + 1)) * W
+            at_x = None  # ya no buscamos el punto exacto
+
+        except Exception:
+            global_max_error = None
+            at_x = None
+
+        # =========================
+        # ERROR LOCAL EN UN PUNTO
+        # =========================
 
         point_error = None
         if req.error_point is not None:
@@ -749,6 +1021,7 @@ async def lagrange_interpolation(req: InterpolationRequest):
                 xe = float(req.error_point)
                 true_y = float(true_fn(xe))
                 poly_y = float(poly_fn(xe))
+
                 if np.isfinite(true_y) and np.isfinite(poly_y):
                     point_error = {
                         "x": round(xe, 10),
@@ -759,18 +1032,33 @@ async def lagrange_interpolation(req: InterpolationRequest):
             except Exception:
                 point_error = None
 
+        # =========================
+        # RESULTADO FINAL
+        # =========================
+
         error_analysis = {
             "true_function": req.true_function,
             "true_function_latex": sp.latex(true_expr),
             "global_max_error": round(global_max_error, 10) if global_max_error is not None else None,
-            "global_max_error_at_x": round(at_x, 10) if at_x is not None else None,
+            "global_max_error_at_x": at_x,  # queda None porque ahora es cota
             "local_error": point_error,
         }
     
+    polynomial_exact_termwise = polynomial_termwise_form(polynomial_simplified, x, numeric=False)
+    polynomial_numeric_termwise = polynomial_termwise_form(polynomial_simplified, x, numeric=True)
+    polynomial_numeric = sp.N(polynomial_simplified, 12)
+    polynomial_latex_exact = polynomial_termwise_latex(polynomial_simplified, x, numeric=False)
+    polynomial_latex_numeric = polynomial_termwise_latex(polynomial_simplified, x, numeric=True)
+
     return {
         "polynomial": str(polynomial_simplified),
+        "polynomial_termwise_exact": str(polynomial_exact_termwise),
+        "polynomial_termwise_numeric": str(polynomial_numeric_termwise),
+        "polynomial_numeric": str(polynomial_numeric),
         "polynomial_plot": str(polynomial_simplified).replace("**", "^"),
         "polynomial_latex": sp.latex(polynomial_simplified),
+        "polynomial_latex_exact": polynomial_latex_exact,
+        "polynomial_latex_numeric": polynomial_latex_numeric,
         "basis_polynomials": basis_polynomials,
         "basis_curves": basis_curves,
         "points": [{"x": xi, "y": yi} for xi, yi in zip(x_sorted, y_sorted)],
@@ -1044,19 +1332,63 @@ async def numerical_integration(req: IntegrationRequest):
                     truncation_error = ((b - a) * h * m2) / 2.0
             elif req.method == "trapezoidal":
                 second_derivative = sp.diff(f_expr, x, 2)
-                probe_points = np.linspace(a, b, min(200, max(50, n * 5)))
-                m2 = max(abs(float(second_derivative.subs(x, xi).evalf())) for xi in probe_points)
-                truncation_error = ((b - a) * (h ** 2) * m2) / 12.0
+                third_derivative = sp.diff(f_expr, x, 3)
+
+                critical_points = sp.solve(third_derivative, x)
+
+                critical_points = [
+                    float(p.evalf())
+                    for p in critical_points
+                    if p.is_real and a <= float(p.evalf()) <= b
+                ]
+
+                evaluation_points = critical_points + [a, b]
+
+                m2 = max(
+                    abs(float(second_derivative.subs(x, xi).evalf()))
+                    for xi in evaluation_points
+                )
+
+                truncation_error = (b - a) ** 3 / (12 * n ** 2) * m2
+    
             elif req.method == "simpson_1_3":
                 fourth_derivative = sp.diff(f_expr, x, 4)
-                probe_points = np.linspace(a, b, min(200, max(50, n * 5)))
-                m4 = max(abs(float(fourth_derivative.subs(x, xi).evalf())) for xi in probe_points)
-                truncation_error = ((b - a) * (h ** 4) * m4) / 180.0
+                fifth_derivative = sp.diff(f_expr, x, 5)
+
+                critical_points = sp.solve(fifth_derivative, x)
+
+                critical_points = [
+                    float(p.evalf())
+                    for p in critical_points
+                    if p.is_real and a <= float(p.evalf()) <= b
+                ]
+
+                evaluation_points = critical_points + [a, b]
+
+                m4 = max(
+                    abs(float(fourth_derivative.subs(x, xi).evalf()))
+                    for xi in evaluation_points
+                )
+                truncation_error = (b - a) ** 5 / (180 * n ** 4) * m4
             elif req.method == "simpson_3_8":
                 fourth_derivative = sp.diff(f_expr, x, 4)
-                probe_points = np.linspace(a, b, min(200, max(50, n * 5)))
-                m4 = max(abs(float(fourth_derivative.subs(x, xi).evalf())) for xi in probe_points)
-                truncation_error = ((b - a) * (h ** 4) * m4) / 80.0
+                fifth_derivative = sp.diff(f_expr, x, 5)
+
+                critical_points = sp.solve(fifth_derivative, x)
+
+                critical_points = [
+                    float(p.evalf())
+                    for p in critical_points
+                    if p.is_real and a <= float(p.evalf()) <= b
+                ]
+
+                evaluation_points = critical_points + [a, b]
+
+                m4 = max(
+                    abs(float(fourth_derivative.subs(x, xi).evalf()))
+                    for xi in evaluation_points
+                )
+                truncation_error = (b - a) ** 5 / (6480 * n ** 4) * m4
         except Exception:
             truncation_error = None
 

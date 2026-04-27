@@ -35,6 +35,39 @@ const CONSTANTS: Record<string, number> = {
   E: Math.E,
 };
 
+function approximateRational(value: number, maxDenominator = 99, tolerance = 1e-10): {
+  p: number;
+  q: number;
+} | null {
+  if (!Number.isFinite(value)) return null;
+
+  for (let q = 1; q <= maxDenominator; q++) {
+    const p = Math.round(value * q);
+    if (Math.abs(value - p / q) <= tolerance) {
+      return { p, q };
+    }
+  }
+
+  return null;
+}
+
+function safePow(base: number, exponent: number): number {
+  if (!Number.isFinite(base) || !Number.isFinite(exponent)) {
+    return Math.pow(base, exponent);
+  }
+
+  // Keep powers like (-8)^(1/3) in the real domain.
+  if (base < 0) {
+    const rational = approximateRational(exponent);
+    if (rational && rational.q % 2 === 1) {
+      const root = -Math.pow(-base, 1 / rational.q);
+      return Math.pow(root, rational.p);
+    }
+  }
+
+  return Math.pow(base, exponent);
+}
+
 /**
  * Tokenize a math expression string.
  */
@@ -51,10 +84,10 @@ function tokenize(expr: string): string[] {
       continue;
     }
 
-    // Numbers (including decimals)
+    // Numbers (including decimals and scientific notation)
     if (/[0-9.]/.test(char)) {
       let num = "";
-      while (i < expr.length && /[0-9.eE+-]/.test(expr[i])) {
+      while (i < expr.length && /[0-9.eE]/.test(expr[i])) {
         // Handle scientific notation
         if ((expr[i] === "e" || expr[i] === "E") && num.length > 0) {
           num += expr[i];
@@ -171,7 +204,7 @@ class Parser {
     if (this.current() === "^") {
       this.consume();
       const right = this.parsePower(); // Right associative
-      left = Math.pow(left, right);
+      left = safePow(left, right);
     }
 
     return left;

@@ -22,6 +22,8 @@ export interface BisectionResponse {
   converged: boolean;
   function: string;
   f_expr_latex: string;
+  real_root_exact?: number;
+  real_root_latex?: string;
 }
 
 export interface FixedPointRequest {
@@ -49,6 +51,8 @@ export interface FixedPointResponse {
   dg_expr_latex: string;
   dg_x0: number;
   convergence_warning?: string;
+  real_root_exact?: number;
+  real_root_latex?: string;
 }
 
 export interface AitkenRequest {
@@ -74,6 +78,10 @@ export interface AitkenResponse {
   g_function: string;
   g_expr_latex: string;
   dg_expr_latex: string;
+  dg_x0: number;
+  convergence_warning?: string;
+  real_root_exact?: number;
+  real_root_latex?: string;
 }
 
 export interface NewtonRaphsonRequest {
@@ -107,6 +115,8 @@ export interface NewtonRaphsonResponse {
   function: string;
   f_expr_latex: string;
   df_expr_latex: string;
+  real_root_exact?: number;
+  real_root_latex?: string;
 }
 
 export interface InterpolationRequest {
@@ -126,9 +136,13 @@ export interface BasisPolynomial {
   L_i: string;
   L_i_expr: string;
   L_i_expr_plot: string;
+  L_i_latex_exact?: string;
+  L_i_latex_numeric?: string;
   term_latex: string;
   term_expr: string;
   term_expr_plot: string;
+  term_latex_exact?: string;
+  term_latex_numeric?: string;
   point: InterpolationPoint;
 }
 
@@ -152,8 +166,13 @@ export interface InterpolationErrorAnalysis {
 
 export interface InterpolationResponse {
   polynomial: string;
+  polynomial_termwise_exact?: string;
+  polynomial_termwise_numeric?: string;
+  polynomial_numeric?: string;
   polynomial_plot: string;
   polynomial_latex: string;
+  polynomial_latex_exact?: string;
+  polynomial_latex_numeric?: string;
   basis_polynomials: BasisPolynomial[];
   basis_curves: InterpolationCurve[];
   points: InterpolationPoint[];

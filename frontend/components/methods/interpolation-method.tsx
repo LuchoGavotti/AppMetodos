@@ -21,6 +21,7 @@ import { ExpressionKeyboard } from "./expression-keyboard";
 import { api } from "@/lib/api";
 import { getAutoViewBox } from "@/lib/graph-range";
 import { evaluate } from "@/lib/math-parser";
+import {parseNumericExpression} from "@/lib/numeric-expression";
 import type { APIError, InterpolationResponse } from "@/types/methods";
 import { Loader2, Play, Plus, Trash2, WandSparkles } from "lucide-react";
 
@@ -30,6 +31,16 @@ const THEORY_FORMULAS = [
     label: "Polinomio Base",
     latex: "L_i(x)=\\prod_{j=0, j\\neq i}^{n}\\frac{x-x_j}{x_i-x_j}",
   },
+  {
+    label: "Error de interpolacion local",
+    latex: "E(x)=f(x)-P_n(x)",
+  },
+  {
+    label: "Cota del error global",
+    latex: "|E(x)| \\leq \\frac{f^{(n+1)}(\\xi)}{(n+1)!} \\prod_{i=0}^n |x-x_i|",
+    description: "n + 1 = numero de nodos"
+  },
+
 ];
 
 interface PointRow {
@@ -46,6 +57,7 @@ export function InterpolationMethod() {
     { x: "2", y: "4" },
   ]);
   const [showBasisInGraph, setShowBasisInGraph] = React.useState(false);
+  const [polynomialView, setPolynomialView] = React.useState<"exact" | "numeric">("exact");
   const [trueFunction, setTrueFunction] = React.useState("");
   const [errorPoint, setErrorPoint] = React.useState("");
   const trueFunctionInputRef = React.useRef<HTMLInputElement>(null);
@@ -67,17 +79,13 @@ export function InterpolationMethod() {
   };
 
   const parseRows = () => {
-    const parsed = rows.map((row) => ({
-      x: Number(row.x),
-      y: Number(row.y),
+    const parsed = rows.map((row, i) => ({
+      x: parseNumericExpression(row.x, `x en fila ${i + 1}`),
+      y: parseNumericExpression(row.y, `y en fila ${i + 1}`),
     }));
 
     if (parsed.length < 2) {
       throw new Error("Debes ingresar al menos 2 puntos.");
-    }
-
-    if (parsed.some((p) => !Number.isFinite(p.x) || !Number.isFinite(p.y))) {
-      throw new Error("Todos los valores x e y deben ser numericos validos.");
     }
 
     return parsed;
@@ -91,7 +99,7 @@ export function InterpolationMethod() {
 
     try {
       const nextRows = rows.map((row) => {
-        const xVal = Number(row.x);
+        const xVal = parseNumericExpression(row.x, "valor x");
         if (!Number.isFinite(xVal)) {
           throw new Error("Hay valores x invalidos en la tabla.");
         }
@@ -122,7 +130,7 @@ export function InterpolationMethod() {
         x_values: parsed.map((p) => p.x),
         y_values: parsed.map((p) => p.y),
         true_function: trueFunction.trim() || undefined,
-        error_point: errorPoint.trim() === "" ? undefined : Number(errorPoint),
+        error_point: errorPoint.trim() === "" ? undefined : parseNumericExpression(errorPoint, "punto de error"),
       });
       setResult(response);
     } catch (err) {
@@ -144,21 +152,24 @@ export function InterpolationMethod() {
     xMin,
     xMax,
     functions: [
-      ...(result?.polynomial_plot
-        ? [{ expr: result.polynomial_plot, color: "#0ea5e9", label: "P(x)", opacity: 1 }]
-        : []),
+      ...(result?.polynomial_plot ? [result.polynomial_plot] : []),
       ...(showBasisInGraph
-        ? (result?.basis_polynomials || []).map((basis, i) => ({
-            expr: basis.L_i_expr_plot,
-            color: ["#ef4444", "#f59e0b", "#22c55e", "#a855f7", "#06b6d4", "#ec4899"][i % 6],
-            label: `L_${basis.index}(x)`,
-            opacity: 0.45,
-          }))
+        ? (result?.basis_polynomials || []).map((basis) => basis.L_i_expr_plot)
         : []),
     ],
     points: graphPoints.map((p) => ({ x: p.x, y: p.y })),
     defaultY: [-10, 10],
   });
+
+  const polynomialText =
+    polynomialView === "exact"
+      ? (result?.polynomial_termwise_exact ?? result?.polynomial)
+      : (result?.polynomial_termwise_numeric ?? result?.polynomial_numeric ?? result?.polynomial);
+
+  const polynomialLatex =
+    polynomialView === "exact"
+      ? (result?.polynomial_latex_exact ?? result?.polynomial_latex)
+      : (result?.polynomial_latex_numeric ?? result?.polynomial_latex);
 
   return (
     <MethodContainer
@@ -192,8 +203,7 @@ export function InterpolationMethod() {
                   <TableRow key={i}>
                     <TableCell>
                       <Input
-                        type="number"
-                        step="any"
+                        type="text"
                         value={row.x}
                         onChange={(e) => updateRow(i, "x", e.target.value)}
                         placeholder="x"
@@ -201,11 +211,10 @@ export function InterpolationMethod() {
                     </TableCell>
                     <TableCell>
                       <Input
-                        type="number"
-                        step="any"
+                        type="text"
                         value={row.y}
                         onChange={(e) => updateRow(i, "y", e.target.value)}
-                        placeholder="y"
+                        placeholder="x"
                       />
                     </TableCell>
                     <TableCell>
@@ -242,15 +251,14 @@ export function InterpolationMethod() {
             <ExpressionKeyboard inputRef={trueFunctionInputRef} setValue={setTrueFunction} />
             <div className="grid grid-cols-[1fr_auto] gap-2">
               <Input
-                type="number"
-                step="any"
+                type="text"
                 value={errorPoint}
                 onChange={(e) => setErrorPoint(e.target.value)}
                 placeholder="x para error local (opcional)"
               />
               <Button type="button" variant="outline" onClick={fillYFromFunction}>
                 <WandSparkles className="size-4" />
-                Completar y=f(x)
+                Completar y = f(x)
               </Button>
             </div>
           </div>
@@ -301,11 +309,31 @@ export function InterpolationMethod() {
           <div className="space-y-4">
             <Card className="glass-card">
               <CardContent className="pt-6 text-sm space-y-2">
-                <p>
-                  <strong>Polinomio:</strong> {result.polynomial}
-                </p>
+                <div className="flex items-center justify-between gap-2">
+                  <p>
+                    <strong>Polinomio:</strong> {polynomialText}
+                  </p>
+                  <div className="flex items-center gap-1">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={polynomialView === "exact" ? "default" : "outline"}
+                      onClick={() => setPolynomialView("exact")}
+                    >
+                      Fraccion
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={polynomialView === "numeric" ? "default" : "outline"}
+                      onClick={() => setPolynomialView("numeric")}
+                    >
+                      Resuelto
+                    </Button>
+                  </div>
+                </div>
                 <div className="text-muted-foreground">
-                  <LaTeX math={`P(x)=${result.polynomial_latex}`} />
+                  <LaTeX math={`P(x)=${polynomialLatex}`} />
                 </div>
                 {result.error_analysis && (
                   <div className="space-y-1 pt-2 border-t border-border/60">
@@ -315,14 +343,24 @@ export function InterpolationMethod() {
                     {result.error_analysis.global_max_error !== undefined && (
                       <p>
                         <strong>Error maximo global:</strong> {result.error_analysis.global_max_error}
-                        {" "}(en x={result.error_analysis.global_max_error_at_x})
                       </p>
                     )}
                     {result.error_analysis.local_error && (
-                      <p>
-                        <strong>Error local en x={result.error_analysis.local_error.x}:</strong>{" "}
-                        {result.error_analysis.local_error.abs_error}
-                      </p>
+                      <div className="space-y-1">
+                        <p>
+                          <strong>Evaluacion en x={result.error_analysis.local_error.x}:</strong>
+                        </p>
+                        <p className="text-sm text-muted-foreground">
+                          P(x) = {result.error_analysis.local_error.interp_value}
+                        </p>
+                        <p className="text-sm text-muted-foreground">
+                          f(x) = {result.error_analysis.local_error.true_value}
+                        </p>
+                        <p>
+                          <strong>Error local:</strong>{" "}
+                          {result.error_analysis.local_error.abs_error}
+                        </p>
+                      </div>
                     )}
                   </div>
                 )}
@@ -339,10 +377,22 @@ export function InterpolationMethod() {
                         <strong>i={basis.index}</strong> en punto ({basis.point.x}, {basis.point.y})
                       </p>
                       <p className="text-sm text-muted-foreground">
-                        <LaTeX math={`L_{${basis.index}}(x) = ${basis.L_i}`} />
+                        <LaTeX
+                          math={`L_{${basis.index}}(x) = ${
+                            polynomialView === "exact"
+                              ? (basis.L_i_latex_exact ?? basis.L_i)
+                              : (basis.L_i_latex_numeric ?? basis.L_i)
+                          }`}
+                        />
                       </p>
                       <p className="text-sm text-muted-foreground">
-                        <LaTeX math={`${basis.point.y}\,L_{${basis.index}}(x) = ${basis.term_latex}`} />
+                        <LaTeX
+                          math={`${basis.point.y}\,L_{${basis.index}}(x) = ${
+                            polynomialView === "exact"
+                              ? (basis.term_latex_exact ?? basis.term_latex)
+                              : (basis.term_latex_numeric ?? basis.term_latex)
+                          }`}
+                        />
                       </p>
                     </div>
                   ))}
