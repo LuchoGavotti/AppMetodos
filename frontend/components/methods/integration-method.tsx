@@ -73,6 +73,36 @@ function parseNumberList(value: string): number[] {
     .map((part, index) => parseNumericExpression(part.trim(), `Valor ${index + 1}`));
 }
 
+function sampleInterpolationCurve(
+  controlPoints: { x: number; y: number }[],
+  samplesPerSegment = 24
+) {
+  if (controlPoints.length < 2) return controlPoints;
+
+  const xStart = controlPoints[0].x;
+  const xEnd = controlPoints[controlPoints.length - 1].x;
+  const totalSamples = Math.max(samplesPerSegment * (controlPoints.length - 1), 24);
+  const sampled: { x: number; y: number }[] = [];
+
+  const interpolateAt = (xValue: number) =>
+    controlPoints.reduce((sum, point, i) => {
+      let basis = 1;
+      for (let j = 0; j < controlPoints.length; j++) {
+        if (i === j) continue;
+        basis *= (xValue - controlPoints[j].x) / (point.x - controlPoints[j].x);
+      }
+      return sum + point.y * basis;
+    }, 0);
+
+  for (let i = 0; i <= totalSamples; i++) {
+    const t = i / totalSamples;
+    const xValue = xStart + (xEnd - xStart) * t;
+    sampled.push({ x: xValue, y: interpolateAt(xValue) });
+  }
+
+  return sampled;
+}
+
 export function IntegrationMethod() {
   const [inputMode, setInputMode] = React.useState<"function" | "table">("function");
   const [func, setFunc] = React.useState("sin(x)");
@@ -159,6 +189,23 @@ export function IntegrationMethod() {
         color: "#22c55e",
       })) || [];
 
+  const simpsonCurves =
+    result?.shapes
+      .filter(
+        (shape) =>
+          (shape.type === "parabola" || shape.type === "cubic") &&
+          shape.points !== undefined
+      )
+      .map((shape) => ({
+        points: sampleInterpolationCurve(
+          (shape.points as { x: number; y: number }[]).map((point) => ({
+            x: point.x,
+            y: point.y,
+          }))
+        ),
+        color: shape.type === "parabola" ? "#f97316" : "#ec4899",
+      })) || [];
+
   const graphPoints =
     result?.values_table.map((p) => ({ x: p.x, y: p.y, color: "#8b5cf6" })) || [];
 
@@ -184,6 +231,11 @@ export function IntegrationMethod() {
       { x: t.x1, y: t.y1 },
       { x: t.x2, y: t.y2 },
       { x: t.x2, y: 0 },
+    ]),
+    ...simpsonCurves.flatMap((curve) => [
+      ...curve.points,
+      { x: curve.points[0].x, y: 0 },
+      { x: curve.points[curve.points.length - 1].x, y: 0 },
     ]),
   ];
   const viewBox = getAutoViewBox({
@@ -345,6 +397,7 @@ export function IntegrationMethod() {
           points={graphPoints}
           rectangles={rectangles}
           trapezoids={trapezoids}
+          filledCurves={simpsonCurves}
           viewBox={viewBox}
           height={360}
         />

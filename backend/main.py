@@ -1,4 +1,5 @@
 import math
+from statistics import NormalDist
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -77,6 +78,8 @@ class MonteCarloRequest(BaseModel):
     bounds: list[list[float]] = Field(..., description="Bounds per dimension: [[min,max], ...]")
     n: int = Field(default=10000, ge=100, le=1_000_000)
     seed: Optional[int] = Field(default=None)
+    confidence_level: float = Field(default=0.95, gt=0.0, lt=1.0)
+    max_error: Optional[float] = Field(default=None, gt=0.0)
     max_points_to_return: int = Field(default=2000, ge=100, le=10000)
 
 
@@ -88,6 +91,18 @@ class DifferentialEquationRequest(BaseModel):
     x_max: float = Field(..., description="Upper x bound")
     h: float = Field(default=0.1, description="Step size")
     method: Literal["euler", "improved_euler", "runge_kutta"] = Field(default="runge_kutta")
+
+
+class AnalyticalSolverRequest(BaseModel):
+    problem_type: Literal["derivative", "integral", "differential-equation"] = Field(...)
+    function: Optional[str] = Field(default=None, description="Function for derivative/integral problems")
+    variable: Optional[Literal["x", "y", "z"]] = Field(default="x")
+    derivative_order: Optional[int] = Field(default=1, ge=1)
+    integral_dimension: Optional[Literal[1, 2, 3]] = Field(default=1)
+    bounds: Optional[list[list[float]]] = Field(default=None, description="Bounds per dimension")
+    equation: Optional[str] = Field(default=None, description="ODE right-hand side y' = f(x,y)")
+    x0: Optional[float] = Field(default=None)
+    y0: Optional[float] = Field(default=None)
 
 
 def parse_function(func_str: str, apply_real_odd_roots: bool = True):
@@ -122,6 +137,28 @@ def parse_ode_function(func_str: str):
         )
 
     return expr, x, y
+
+
+def parse_general_expression(func_str: str, allowed_symbols: tuple[sp.Symbol, ...]):
+    """Parse an expression using only the provided variables."""
+    local_dict = {str(sym): sym for sym in allowed_symbols}
+    try:
+        normalized = normalize_function_aliases(func_str)
+        expr = sp.sympify(normalized, locals=local_dict)
+        expr = enforce_real_odd_roots(expr)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid expression: {str(e)}")
+
+    unknown_symbols = expr.free_symbols - set(allowed_symbols)
+    if unknown_symbols:
+        unknown = ", ".join(sorted(str(s) for s in unknown_symbols))
+        allowed = ", ".join(str(s) for s in allowed_symbols)
+        raise HTTPException(
+            status_code=400,
+            detail=f"Expression contains invalid symbols: {unknown}. Use only {allowed}."
+        )
+
+    return expr
 
 
 def evaluate_ode_func(expr, x_sym, y_sym, x_val: float, y_val: float) -> float:
@@ -242,6 +279,157 @@ def try_symbolic_ode_solution(expr, x_sym, y_sym, x0: float, y0: float):
     }
 
 
+def try_symbolic_ode_solution_optional(expr, x_sym, y_sym, x0: Optional[float], y0: Optional[float]):
+    """Try obtaining an analytical ODE solution with optional initial conditions."""
+    y_func = sp.Function("y")
+    ode_eq = sp.Eq(sp.diff(y_func(x_sym), x_sym), expr.subs(y_sym, y_func(x_sym)))
+
+    try:
+        hints = tuple(sp.classify_ode(ode_eq, y_func(x_sym)))
+    except Exception:
+        hints = tuple()
+
+    preferred_hint = None
+    if hints:
+        preferred_hint = next((hint for hint in hints if isinstance(hint, str) and not hint.endswith("_Integral")), None)
+        if preferred_hint is None:
+            preferred_hint = next((hint for hint in hints if isinstance(hint, str)), None)
+
+    has_ics = x0 is not None and y0 is not None
+    ics = None
+    if has_ics:
+        ics = {y_func(sp.nsimplify(x0)): sp.nsimplify(y0)}
+
+    solution_eq = None
+    solved_with_ics = False
+
+    try:
+        kwargs = {"hint": preferred_hint} if preferred_hint else {}
+        if ics is not None:
+            solution_eq = sp.dsolve(ode_eq, y_func(x_sym), ics=ics, **kwargs)
+            solved_with_ics = True
+        else:
+            solution_eq = sp.dsolve(ode_eq, y_func(x_sym), **kwargs)
+    except Exception:
+        try:
+            kwargs = {"hint": preferred_hint} if preferred_hint else {}
+            solution_eq = sp.dsolve(ode_eq, y_func(x_sym), **kwargs)
+        except Exception:
+            return None
+
+    if not isinstance(solution_eq, sp.Equality):
+        return None
+
+    solution_rhs = sp.simplify(solution_eq.rhs)
+    satisfies_initial_condition = None
+    if has_ics:
+        try:
+            check_value = sp.simplify(solution_rhs.subs(x_sym, sp.nsimplify(x0)) - sp.nsimplify(y0))
+            satisfies_initial_condition = bool(check_value == 0)
+        except Exception:
+            satisfies_initial_condition = None
+
+    return {
+        "hint": preferred_hint,
+        "solved_with_ics": solved_with_ics,
+        "satisfies_initial_condition": satisfies_initial_condition,
+        "solution_eq": solution_eq,
+        "solution_rhs": solution_rhs,
+    }
+
+
+def build_derivative_steps(expr: sp.Expr, variable: sp.Symbol, order: int):
+    derivative_operator = rf"\frac{{d^{order}}}{{d{sp.latex(variable)}^{order}}}" if order > 1 else rf"\frac{{d}}{{d{sp.latex(variable)}}}"
+    unsimplified = expr
+    for _ in range(order):
+        unsimplified = sp.diff(unsimplified, variable, evaluate=False)
+    simplified = sp.simplify(sp.diff(expr, variable, order))
+
+    steps = [
+        {
+            "title": "1) Funcion de partida",
+            "description": "Se identifica la expresion original sobre la que se va a derivar.",
+            "latex": rf"f({sp.latex(variable)}) = {sp.latex(expr)}",
+        },
+        {
+            "title": "2) Operador de derivacion",
+            "description": "Se indica respecto de que variable y con que orden se va a derivar.",
+            "latex": rf"{derivative_operator}\left({sp.latex(expr)}\right)",
+        },
+        {
+            "title": "3) Aplicacion directa de la derivada",
+            "description": "Se aplica la derivacion simbolica antes de simplificar el resultado.",
+            "latex": rf"{sp.latex(unsimplified)}",
+        },
+        {
+            "title": "4) Simplificacion algebraica",
+            "description": "Se reordena la expresion para dejar la derivada en una forma mas clara.",
+            "latex": rf"{sp.latex(simplified)}",
+        },
+        {
+            "title": "5) Resultado final",
+            "description": "Esta es la derivada analitica obtenida para el orden pedido.",
+            "latex": rf"f^{{({order})}}({sp.latex(variable)}) = {sp.latex(simplified)}" if order > 1 else rf"f'({sp.latex(variable)}) = {sp.latex(simplified)}",
+        },
+    ]
+
+    return steps, simplified
+
+
+def build_integral_steps(expr: sp.Expr, variables: tuple[sp.Symbol, ...], bounds_array: np.ndarray):
+    current = expr
+    current_latex = sp.latex(expr)
+    steps = [
+        {
+            "title": "1) Planteo de la integral",
+            "description": "Se escribe la integral definida con sus cotas de integracion.",
+            "latex": None,
+        }
+    ]
+
+    integral_latex = current_latex
+    for idx in reversed(range(len(variables))):
+        sym = variables[idx]
+        low, high = bounds_array[idx]
+        integral_latex = rf"\int_{{{sp.latex(sp.nsimplify(low))}}}^{{{sp.latex(sp.nsimplify(high))}}} {integral_latex}\, d{sp.latex(sym)}"
+    steps[0]["latex"] = integral_latex
+
+    for idx, sym in enumerate(variables):
+        low, high = bounds_array[idx]
+        antiderivative = sp.integrate(current, sym)
+        antiderivative = sp.simplify(antiderivative)
+        evaluated = sp.simplify(antiderivative.subs(sym, high) - antiderivative.subs(sym, low))
+
+        steps.append(
+            {
+                "title": f"{len(steps)+1}) Integracion respecto de {sym}",
+                "description": f"Se calcula una primitiva respecto de {sym}, tratando las otras variables como constantes.",
+                "latex": rf"\int {current_latex}\, d{sp.latex(sym)} = {sp.latex(antiderivative)}",
+            }
+        )
+        steps.append(
+            {
+                "title": f"{len(steps)+1}) Evaluacion en cotas de {sym}",
+                "description": f"Se reemplaza {sym} por la cota superior y luego por la inferior para obtener la contribucion definida.",
+                "latex": rf"\left[{sp.latex(antiderivative)}\right]_{{{sp.latex(sp.nsimplify(low))}}}^{{{sp.latex(sp.nsimplify(high))}}} = {sp.latex(evaluated)}",
+            }
+        )
+
+        current = evaluated
+        current_latex = sp.latex(current)
+
+    result = sp.simplify(current)
+    steps.append(
+        {
+            "title": f"{len(steps)+1}) Resultado final",
+            "description": "Despues de integrar y evaluar todas las variables, se obtiene el valor exacto de la integral.",
+            "latex": sp.latex(result),
+        }
+    )
+
+    return steps, result
+
+
 def normalize_function_aliases(func_str: str) -> str:
     """Allow common Spanish aliases for function names."""
     normalized = func_str
@@ -303,6 +491,60 @@ def evaluate_abs_derivative_at(expr, x_sym, x_val: float) -> tuple[sp.Expr, floa
                 detail=f"Cannot evaluate derivative at x={x_val}: numerical derivative resulted in NaN/Inf"
             )
         return dg_expr, abs(float(dg_val))
+
+
+def safe_abs_expr_eval_on_interval(expr: sp.Expr, x_sym: sp.Symbol, x_val: float, a: float, b: float) -> float:
+    """Evaluate |expr(x)| on [a,b], using one-sided limits at the interval boundaries when needed."""
+    try:
+        value = float(expr.subs(x_sym, x_val).evalf())
+        if np.isnan(value) or np.isinf(value):
+            raise ValueError("Expression evaluation returned NaN/Inf")
+        return abs(value)
+    except Exception:
+        try:
+            if np.isclose(x_val, a):
+                limit_expr = sp.limit(expr, x_sym, a, dir="+")
+            elif np.isclose(x_val, b):
+                limit_expr = sp.limit(expr, x_sym, b, dir="-")
+            else:
+                raise
+
+            limit_value = float(limit_expr.evalf())
+            if np.isnan(limit_value) or np.isinf(limit_value):
+                raise ValueError("Expression limit returned NaN/Inf")
+            return abs(limit_value)
+        except Exception:
+            raise
+
+
+def derivative_bound_on_interval(
+    derivative_expr: sp.Expr,
+    critical_expr: Optional[sp.Expr],
+    x_sym: sp.Symbol,
+    a: float,
+    b: float,
+    n: int,
+) -> float:
+    """Estimate a reliable max |derivative_expr| over [a,b] using critical points, endpoints, and a probe grid."""
+    probe_points = np.linspace(a, b, min(400, max(120, n * 8)))
+    evaluation_points = {float(a), float(b)}
+    evaluation_points.update(float(xi) for xi in probe_points)
+
+    if critical_expr is not None:
+        try:
+            critical_points = sp.solve(critical_expr, x_sym)
+            for p in critical_points:
+                if p.is_real:
+                    p_float = float(p.evalf())
+                    if a <= p_float <= b:
+                        evaluation_points.add(p_float)
+        except Exception:
+            pass
+
+    return max(
+        safe_abs_expr_eval_on_interval(derivative_expr, x_sym, xi, a, b)
+        for xi in evaluation_points
+    )
 
 
 def make_rng(seed: Optional[int]) -> np.random.Generator:
@@ -371,6 +613,12 @@ def sample_points_in_domain(rng: np.random.Generator, bounds_array: np.ndarray, 
     lows = bounds_array[:, 0]
     highs = bounds_array[:, 1]
     return rng.uniform(lows, highs, size=(n, bounds_array.shape[0]))
+
+
+def confidence_z_value(confidence_level: float) -> float:
+    """Return the two-sided normal critical value for the requested confidence."""
+    alpha = 1.0 - confidence_level
+    return float(NormalDist().inv_cdf(1.0 - alpha / 2.0))
 
 
 def evaluate_function_batch(compiled_fn, points: np.ndarray) -> np.ndarray:
@@ -1324,8 +1572,7 @@ async def numerical_integration(req: IntegrationRequest):
         try:
             if req.method in ["left_rectangle", "right_rectangle", "midpoint"]:
                 second_derivative = sp.diff(f_expr, x, 2)
-                probe_points = np.linspace(a, b, min(200, max(50, n * 5)))
-                m2 = max(abs(float(second_derivative.subs(x, xi).evalf())) for xi in probe_points)
+                m2 = derivative_bound_on_interval(second_derivative, None, x, a, b, n)
                 if req.method == "midpoint":
                     truncation_error = ((b - a) * (h ** 2) * m2) / 24.0
                 else:
@@ -1333,61 +1580,19 @@ async def numerical_integration(req: IntegrationRequest):
             elif req.method == "trapezoidal":
                 second_derivative = sp.diff(f_expr, x, 2)
                 third_derivative = sp.diff(f_expr, x, 3)
-
-                critical_points = sp.solve(third_derivative, x)
-
-                critical_points = [
-                    float(p.evalf())
-                    for p in critical_points
-                    if p.is_real and a <= float(p.evalf()) <= b
-                ]
-
-                evaluation_points = critical_points + [a, b]
-
-                m2 = max(
-                    abs(float(second_derivative.subs(x, xi).evalf()))
-                    for xi in evaluation_points
-                )
+                m2 = derivative_bound_on_interval(second_derivative, third_derivative, x, a, b, n)
 
                 truncation_error = (b - a) ** 3 / (12 * n ** 2) * m2
     
             elif req.method == "simpson_1_3":
                 fourth_derivative = sp.diff(f_expr, x, 4)
                 fifth_derivative = sp.diff(f_expr, x, 5)
-
-                critical_points = sp.solve(fifth_derivative, x)
-
-                critical_points = [
-                    float(p.evalf())
-                    for p in critical_points
-                    if p.is_real and a <= float(p.evalf()) <= b
-                ]
-
-                evaluation_points = critical_points + [a, b]
-
-                m4 = max(
-                    abs(float(fourth_derivative.subs(x, xi).evalf()))
-                    for xi in evaluation_points
-                )
+                m4 = derivative_bound_on_interval(fourth_derivative, fifth_derivative, x, a, b, n)
                 truncation_error = (b - a) ** 5 / (180 * n ** 4) * m4
             elif req.method == "simpson_3_8":
                 fourth_derivative = sp.diff(f_expr, x, 4)
                 fifth_derivative = sp.diff(f_expr, x, 5)
-
-                critical_points = sp.solve(fifth_derivative, x)
-
-                critical_points = [
-                    float(p.evalf())
-                    for p in critical_points
-                    if p.is_real and a <= float(p.evalf()) <= b
-                ]
-
-                evaluation_points = critical_points + [a, b]
-
-                m4 = max(
-                    abs(float(fourth_derivative.subs(x, xi).evalf()))
-                    for xi in evaluation_points
-                )
+                m4 = derivative_bound_on_interval(fourth_derivative, fifth_derivative, x, a, b, n)
                 truncation_error = (b - a) ** 5 / (6480 * n ** 4) * m4
         except Exception:
             truncation_error = None
@@ -1449,13 +1654,17 @@ async def monte_carlo_integration(req: MonteCarloRequest):
         )
 
     used_n = int(f_values.size)
+    z_value = confidence_z_value(req.confidence_level)
 
     method_details = {}
     if req.method == "mean-value":
         mean_val = float(np.mean(f_values))
         estimate = domain_volume * mean_val
-        std_val = float(np.std(f_values, ddof=1)) if used_n > 1 else 0.0
-        standard_error = domain_volume * std_val / np.sqrt(used_n) if used_n > 1 else 0.0
+        sample_std_dev = float(np.std(f_values, ddof=1)) if used_n > 1 else 0.0
+        sample_variance = float(np.var(f_values, ddof=1)) if used_n > 1 else 0.0
+        standard_error = float(domain_volume * sample_std_dev / np.sqrt(used_n)) if used_n > 1 else 0.0
+        sample_mean = mean_val
+        estimator_scale = domain_volume
 
         contributions = domain_volume * f_values
         accept_flags = None
@@ -1474,8 +1683,11 @@ async def monte_carlo_integration(req: MonteCarloRequest):
         signed_hits = positive_hits - negative_hits
 
         estimate = domain_volume * z_height * float(np.mean(signed_hits))
-        std_hits = float(np.std(signed_hits, ddof=1)) if used_n > 1 else 0.0
-        standard_error = domain_volume * z_height * std_hits / np.sqrt(used_n) if used_n > 1 else 0.0
+        sample_std_dev = float(np.std(signed_hits, ddof=1)) if used_n > 1 else 0.0
+        sample_variance = float(np.var(signed_hits, ddof=1)) if used_n > 1 else 0.0
+        standard_error = float(domain_volume * z_height * sample_std_dev / np.sqrt(used_n)) if used_n > 1 else 0.0
+        sample_mean = float(np.mean(signed_hits))
+        estimator_scale = domain_volume * z_height
 
         contributions = domain_volume * z_height * signed_hits
         accept_flags = signed_hits != 0
@@ -1487,6 +1699,16 @@ async def monte_carlo_integration(req: MonteCarloRequest):
             "accepted_points": int(np.count_nonzero(accept_flags)),
             "rejected_points": int(used_n - np.count_nonzero(accept_flags)),
         }
+
+    margin_of_error = float(z_value * standard_error)
+    confidence_interval_low = float(estimate - margin_of_error)
+    confidence_interval_high = float(estimate + margin_of_error)
+    meets_max_error = bool(req.max_error is not None and margin_of_error <= req.max_error)
+    required_n_for_max_error = None
+    if req.max_error is not None and sample_std_dev > 0:
+        required_n_for_max_error = int(
+            math.ceil(((z_value * estimator_scale * sample_std_dev) / req.max_error) ** 2)
+        )
 
     exact_integral = maybe_exact_integral(expr, symbols, bounds_array)
     abs_error = abs(exact_integral - estimate) if exact_integral is not None else None
@@ -1524,12 +1746,167 @@ async def monte_carlo_integration(req: MonteCarloRequest):
         "seed": req.seed,
         "domain_volume": round(float(domain_volume), 10),
         "estimate": round(float(estimate), 10),
+        "sample_mean": round(float(sample_mean), 10),
+        "sample_variance": round(float(sample_variance), 10),
+        "sample_std_dev": round(float(sample_std_dev), 10),
         "standard_error": round(float(standard_error), 10),
-        "confidence_95_half_width": round(float(1.96 * standard_error), 10),
+        "confidence_level": round(float(req.confidence_level), 10),
+        "z_value": round(float(z_value), 10),
+        "margin_of_error": round(float(margin_of_error), 10),
+        "confidence_interval_low": round(float(confidence_interval_low), 10),
+        "confidence_interval_high": round(float(confidence_interval_high), 10),
+        "max_error": round(float(req.max_error), 10) if req.max_error is not None else None,
+        "meets_max_error": meets_max_error,
+        "required_n_for_max_error": required_n_for_max_error,
         "exact_integral": round(float(exact_integral), 10) if exact_integral is not None else None,
         "abs_error": round(float(abs_error), 10) if abs_error is not None else None,
         "method_details": method_details,
         "sample_points": vis_points,
+    }
+
+
+@app.post("/analytical-solver")
+async def analytical_solver(req: AnalyticalSolverRequest):
+    """Solve derivatives, definite integrals, and ODEs symbolically step by step when possible."""
+    x, y, z = sp.symbols("x y z")
+
+    if req.problem_type == "derivative":
+        if not req.function:
+            raise HTTPException(status_code=400, detail="Function is required for derivative problems")
+
+        variable_name = req.variable or "x"
+        variable_map = {"x": x, "y": y, "z": z}
+        variable = variable_map[variable_name]
+        expr = parse_general_expression(req.function, (x, y, z))
+        order = int(req.derivative_order or 1)
+
+        steps, result_expr = build_derivative_steps(expr, variable, order)
+        input_latex = rf"\frac{{d^{order}}}{{d{sp.latex(variable)}^{order}}}\left({sp.latex(expr)}\right)" if order > 1 else rf"\frac{{d}}{{d{sp.latex(variable)}}}\left({sp.latex(expr)}\right)"
+
+        return {
+            "available": True,
+            "problem_type": req.problem_type,
+            "input_latex": input_latex,
+            "result_latex": sp.latex(result_expr),
+            "message": None,
+            "steps": steps,
+            "metadata": None,
+        }
+
+    if req.problem_type == "integral":
+        if not req.function:
+            raise HTTPException(status_code=400, detail="Function is required for integral problems")
+
+        dimension = int(req.integral_dimension or 1)
+        variables = (x, y, z)[:dimension]
+        expr = parse_general_expression(req.function, variables)
+        bounds_array = normalize_bounds(req.bounds or [], dimension)
+
+        try:
+            steps, result_expr = build_integral_steps(expr, variables, bounds_array)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Could not solve the integral analytically: {str(e)}")
+
+        input_latex = sp.latex(expr)
+        for idx in reversed(range(len(variables))):
+            low, high = bounds_array[idx]
+            input_latex = rf"\int_{{{sp.latex(sp.nsimplify(low))}}}^{{{sp.latex(sp.nsimplify(high))}}} {input_latex}\, d{sp.latex(variables[idx])}"
+
+        return {
+            "available": True,
+            "problem_type": req.problem_type,
+            "input_latex": input_latex,
+            "result_latex": sp.latex(result_expr),
+            "message": None,
+            "steps": steps,
+            "metadata": None,
+        }
+
+    if not req.equation:
+        raise HTTPException(status_code=400, detail="Equation is required for differential-equation problems")
+    if (req.x0 is None) != (req.y0 is None):
+        raise HTTPException(status_code=400, detail="Provide both x0 and y0 to apply an initial condition")
+
+    expr, x_sym, y_sym = parse_ode_function(req.equation)
+    solution_data = try_symbolic_ode_solution_optional(expr, x_sym, y_sym, req.x0, req.y0)
+
+    input_latex = rf"\frac{{dy}}{{dx}} = {sp.latex(expr)}"
+    if req.x0 is not None and req.y0 is not None:
+        input_latex += rf",\quad y({sp.latex(sp.nsimplify(req.x0))}) = {sp.latex(sp.nsimplify(req.y0))}"
+
+    if solution_data is None:
+        return {
+            "available": False,
+            "problem_type": req.problem_type,
+            "input_latex": input_latex,
+            "result_latex": None,
+            "message": "No fue posible obtener una solucion analitica cerrada para esta ecuacion diferencial.",
+            "steps": [
+                {
+                    "title": "1) Planteo del problema",
+                    "description": "Se interpreto la ecuacion diferencial y se intento clasificarla simbolicamente.",
+                    "latex": input_latex,
+                },
+                {
+                    "title": "2) Intento de resolucion",
+                    "description": "El sistema no encontro una solucion cerrada manejable para mostrar paso a paso.",
+                    "latex": None,
+                },
+            ],
+            "metadata": None,
+        }
+
+    solution_eq = solution_data["solution_eq"]
+    solution_rhs = solution_data["solution_rhs"]
+    hint = solution_data["hint"]
+
+    steps = [
+        {
+            "title": "1) Planteo del problema",
+            "description": "Se escribe la ecuacion diferencial en la forma y' = f(x,y).",
+            "latex": input_latex,
+        },
+        {
+            "title": "2) Clasificacion automatica",
+            "description": f"Se reconoce una estrategia simbolica de resolucion ({hint or 'automatica'}).",
+            "latex": None,
+        },
+        {
+            "title": "3) Resolucion de la ecuacion",
+            "description": "Se aplica el solucionador simbolico para obtener la solucion general o particular.",
+            "latex": sp.latex(solution_eq),
+        },
+    ]
+
+    if req.x0 is not None and req.y0 is not None:
+        steps.append(
+            {
+                "title": "4) Aplicacion de la condicion inicial",
+                "description": "Se usa el dato inicial para fijar la constante de integracion.",
+                "latex": rf"y({sp.latex(sp.nsimplify(req.x0))}) = {sp.latex(sp.nsimplify(req.y0))}",
+            }
+        )
+
+    steps.append(
+        {
+            "title": f"{len(steps)+1}) Despeje de y(x)",
+            "description": "Se expresa la solucion final en forma explicita cuando es posible.",
+            "latex": rf"y(x) = {sp.latex(solution_rhs)}",
+        }
+    )
+
+    return {
+        "available": True,
+        "problem_type": req.problem_type,
+        "input_latex": input_latex,
+        "result_latex": sp.latex(solution_rhs),
+        "message": None,
+        "steps": steps,
+        "metadata": {
+            "hint": hint,
+            "solved_with_ics": solution_data["solved_with_ics"],
+            "satisfies_initial_condition": solution_data["satisfies_initial_condition"],
+        },
     }
 
 

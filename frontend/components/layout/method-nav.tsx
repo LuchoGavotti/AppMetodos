@@ -13,6 +13,7 @@ import {
   AreaChart,
   Dices,
   Route,
+  Sigma,
 } from "lucide-react";
 
 export type MethodId =
@@ -24,7 +25,8 @@ export type MethodId =
   | "derivative"
   | "integration"
   | "monte-carlo"
-  | "differential-equation";
+  | "differential-equation"
+  | "analytical-solver";
 
 interface Method {
   id: MethodId;
@@ -97,6 +99,13 @@ const methods: Method[] = [
     shortName: "EDO",
     icon: Route,
     colorClass: "method-differential-equation",
+  },
+  {
+    id: "analytical-solver",
+    name: "Resolucion Analitica",
+    shortName: "Analitica",
+    icon: Sigma,
+    colorClass: "method-integration",
   },
 ];
 

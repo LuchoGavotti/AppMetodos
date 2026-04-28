@@ -12,6 +12,7 @@ import { InterpolationMethod } from "@/components/methods/interpolation-method";
 import { DerivativeMethod } from "@/components/methods/derivative-method";
 import { MonteCarloMethod } from "@/components/methods/monte-carlo-method";
 import { DifferentialEquationMethod } from "@/components/methods/differential-equation-method";
+import { AnalyticalSolverMethod } from "@/components/methods/analytical-solver-method";
 
 export default function HomePage() {
   const [activeMethod, setActiveMethod] = React.useState<MethodId>("integration");
@@ -30,6 +31,7 @@ export default function HomePage() {
         {activeMethod === "derivative" && <DerivativeMethod />}
         {activeMethod === "monte-carlo" && <MonteCarloMethod />}
         {activeMethod === "differential-equation" && <DifferentialEquationMethod />}
+        {activeMethod === "analytical-solver" && <AnalyticalSolverMethod />}
       </main>
     </div>
   );

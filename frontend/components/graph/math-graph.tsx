@@ -52,6 +52,13 @@ interface MathGraphProps {
     y2: number;
     color?: string;
   }>;
+  filledCurves?: Array<{
+    points: Array<{
+      x: number;
+      y: number;
+    }>;
+    color?: string;
+  }>;
   viewBox?: {
     x: [number, number];
     y: [number, number];
@@ -92,6 +99,7 @@ export function MathGraph({
   segments = [],
   rectangles = [],
   trapezoids = [],
+  filledCurves = [],
   viewBox = { x: [-10, 10], y: [-10, 10] },
   height = 400,
   showGrid = true,
@@ -260,6 +268,27 @@ export function MathGraph({
             strokeOpacity={0.5}
           />
         ))}
+
+        {/* Render filled curves (for Simpson methods) */}
+        {filledCurves.map((curve, i) => {
+          if (curve.points.length < 2) return null;
+
+          const polygonPoints: [number, number][] = [
+            [curve.points[0].x, 0],
+            ...curve.points.map((point) => [point.x, point.y] as [number, number]),
+            [curve.points[curve.points.length - 1].x, 0],
+          ];
+
+          return (
+            <Polygon
+              key={`filled-curve-${i}`}
+              points={polygonPoints}
+              color={curve.color || defaultColors[i % defaultColors.length]}
+              fillOpacity={0.2}
+              strokeOpacity={0.6}
+            />
+          );
+        })}
 
         {/* Render functions as segments so invalid/extreme values only cut local pieces */}
         {plottedFunctionSegments.map((segment) => (

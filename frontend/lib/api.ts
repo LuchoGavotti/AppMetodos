@@ -15,6 +15,8 @@ import type {
   IntegrationResponse,
   MonteCarloRequest,
   MonteCarloResponse,
+  AnalyticalSolverRequest,
+  AnalyticalSolverResponse,
   DifferentialEquationRequest,
   DifferentialEquationResponse,
   APIError,
@@ -101,6 +103,15 @@ class APIClient {
 
   async monteCarlo(data: MonteCarloRequest): Promise<MonteCarloResponse> {
     return this.request("/monte-carlo", {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async analyticalSolver(
+    data: AnalyticalSolverRequest
+  ): Promise<AnalyticalSolverResponse> {
+    return this.request("/analytical-solver", {
       method: "POST",
       body: JSON.stringify(data),
     });

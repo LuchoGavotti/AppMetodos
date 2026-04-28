@@ -255,6 +255,8 @@ export interface MonteCarloRequest {
   bounds: [number, number][];
   n: number;
   seed?: number;
+  confidence_level: number;
+  max_error?: number;
   max_points_to_return?: number;
 }
 
@@ -278,8 +280,18 @@ export interface MonteCarloResponse {
   seed?: number;
   domain_volume: number;
   estimate: number;
+  sample_mean: number;
+  sample_variance: number;
+  sample_std_dev: number;
   standard_error: number;
-  confidence_95_half_width: number;
+  confidence_level: number;
+  z_value: number;
+  margin_of_error: number;
+  confidence_interval_low: number;
+  confidence_interval_high: number;
+  max_error?: number;
+  meets_max_error?: boolean;
+  required_n_for_max_error?: number | null;
   exact_integral?: number;
   abs_error?: number;
   method_details?: {
@@ -290,6 +302,38 @@ export interface MonteCarloResponse {
     rejected_points?: number;
   };
   sample_points: MonteCarloSamplePoint[];
+}
+
+export interface AnalyticalSolverRequest {
+  problem_type: "derivative" | "integral" | "differential-equation";
+  function?: string;
+  variable?: "x" | "y" | "z";
+  derivative_order?: number;
+  integral_dimension?: 1 | 2 | 3;
+  bounds?: [number, number][];
+  equation?: string;
+  x0?: number;
+  y0?: number;
+}
+
+export interface AnalyticalSolverStep {
+  title: string;
+  description: string;
+  latex?: string | null;
+}
+
+export interface AnalyticalSolverResponse {
+  available: boolean;
+  problem_type: "derivative" | "integral" | "differential-equation";
+  input_latex: string;
+  result_latex?: string | null;
+  message?: string | null;
+  steps: AnalyticalSolverStep[];
+  metadata?: {
+    hint?: string | null;
+    solved_with_ics?: boolean | null;
+    satisfies_initial_condition?: boolean | null;
+  } | null;
 }
 
 export interface DifferentialEquationRequest {
