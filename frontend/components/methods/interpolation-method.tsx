@@ -5,6 +5,14 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
 import {
   Table,
@@ -57,6 +65,7 @@ export function InterpolationMethod() {
     { x: "2", y: "4" },
   ]);
   const [showBasisInGraph, setShowBasisInGraph] = React.useState(false);
+  const [showTrueFunctionInGraph, setShowTrueFunctionInGraph] = React.useState(false);
   const [polynomialView, setPolynomialView] = React.useState<"exact" | "numeric">("exact");
   const [trueFunction, setTrueFunction] = React.useState("");
   const [errorPoint, setErrorPoint] = React.useState("");
@@ -148,11 +157,21 @@ export function InterpolationMethod() {
   const xData = result?.points.map((p) => p.x) || [-5, 5];
   const xMin = Math.min(...xData);
   const xMax = Math.max(...xData);
+  const isTrueFunctionPlotValid = React.useMemo(() => {
+    const expr = trueFunction.trim();
+    if (!expr) return false;
+    const y0 = evaluate(expr, 0);
+    const y1 = evaluate(expr, 1);
+    return Number.isFinite(y0) || Number.isFinite(y1);
+  }, [trueFunction]);
   const viewBox = getAutoViewBox({
     xMin,
     xMax,
     functions: [
       ...(result?.polynomial_plot ? [result.polynomial_plot] : []),
+      ...(showTrueFunctionInGraph && trueFunction.trim() && isTrueFunctionPlotValid
+        ? [trueFunction.trim()]
+        : []),
       ...(showBasisInGraph
         ? (result?.basis_polynomials || []).map((basis) => basis.L_i_expr_plot)
         : []),
@@ -249,6 +268,9 @@ export function InterpolationMethod() {
               className="font-mono"
             />
             <ExpressionKeyboard inputRef={trueFunctionInputRef} setValue={setTrueFunction} />
+            {trueFunction.trim() && !isTrueFunctionPlotValid && (
+              <p className="text-xs text-destructive">Expresion invalida para graficar.</p>
+            )}
             <div className="grid grid-cols-[1fr_auto] gap-2">
               <Input
                 type="text"
@@ -283,12 +305,22 @@ export function InterpolationMethod() {
           <div className="flex items-center gap-2 px-2 pt-1">
             <Switch checked={showBasisInGraph} onCheckedChange={setShowBasisInGraph} id="show-basis" />
             <Label htmlFor="show-basis">Mostrar polinomios base en el grafico</Label>
+            <Switch
+              checked={showTrueFunctionInGraph}
+              onCheckedChange={setShowTrueFunctionInGraph}
+              id="show-true-function"
+              disabled={!trueFunction.trim() || !isTrueFunctionPlotValid}
+            />
+            <Label htmlFor="show-true-function">Mostrar funcion real</Label>
           </div>
           <MathGraph
             points={graphPoints}
             functions={[
               ...(result?.polynomial_plot
                 ? [{ expr: result.polynomial_plot, color: "#0ea5e9", label: "P(x)", opacity: 1 }]
+                : []),
+              ...(showTrueFunctionInGraph && trueFunction.trim() && isTrueFunctionPlotValid
+                ? [{ expr: trueFunction.trim(), color: "#f97316", label: "f(x)", opacity: 0.85 }]
                 : []),
               ...(showBasisInGraph
                 ? (result?.basis_polynomials || []).map((basis, i) => ({
@@ -311,7 +343,7 @@ export function InterpolationMethod() {
               <CardContent className="pt-6 text-sm space-y-2">
                 <div className="flex items-center justify-between gap-2">
                   <p>
-                    <strong>Polinomio:</strong> {polynomialText}
+                    <strong>Polinomio:</strong> 
                   </p>
                   <div className="flex items-center gap-1">
                     <Button
@@ -341,9 +373,109 @@ export function InterpolationMethod() {
                       <strong>Funcion de referencia:</strong> <LaTeX math={result.error_analysis.true_function_latex} />
                     </p>
                     {result.error_analysis.global_max_error !== undefined && (
-                      <p>
-                        <strong>Error maximo global:</strong> {result.error_analysis.global_max_error}
-                      </p>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <p>
+                          <strong>Error maximo global:</strong> {result.error_analysis.global_max_error}
+                        </p>
+                        {result.error_analysis.derivative_info && (
+                          <Dialog>
+                            <DialogTrigger asChild>
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="icon"
+                                className="h-6 w-6 rounded-full text-xs"
+                                aria-label="Ver detalle de la cota"
+                              >
+                                +
+                              </Button>
+                            </DialogTrigger>
+                            <DialogContent className="max-w-none w-[min(96vw,80rem)] min-w-[min(56rem,96vw)] max-h-[85vh] overflow-auto">
+                              <DialogHeader>
+                                <DialogTitle>Detalle de la cota de error</DialogTitle>
+                                <DialogDescription>
+                                  Derivadas usadas y comparativa entre raices y limites del intervalo.
+                                </DialogDescription>
+                              </DialogHeader>
+                              <div className="space-y-6 pt-2">
+                                <div className="space-y-2">
+                                  <p className="text-sm font-medium">Derivadas utilizadas</p>
+                                  <div className="space-y-2 text-sm text-muted-foreground">
+                                    <LaTeX
+                                      block
+                                      math={`f^{(${result.error_analysis.derivative_info.n_plus_1})}(x) = ${result.error_analysis.derivative_info.f_n1_latex}`}
+                                    />
+                                    <LaTeX
+                                      block
+                                      math={`f^{(${result.error_analysis.derivative_info.n_plus_1 + 1})}(x) = ${result.error_analysis.derivative_info.f_n2_latex}`}
+                                    />
+                                    <LaTeX
+                                      block
+                                      math={`w(x) = ${result.error_analysis.derivative_info.w_expr_latex}`}
+                                    />
+                                    <LaTeX
+                                      block
+                                      math={`w'(x) = ${result.error_analysis.derivative_info.w_prime_latex}`}
+                                    />
+                                  </div>
+                                </div>
+
+                                <div className="space-y-2">
+                                  <p className="text-sm font-medium">
+                                    Comparativa de |f^(n+1)(x)|
+                                  </p>
+                                  <p className="text-xs text-muted-foreground">
+                                    Se evalua en raices de f^(n+2) y en los limites del intervalo.
+                                  </p>
+                                  <Table>
+                                    <TableHeader>
+                                      <TableRow>
+                                        <TableHead>x</TableHead>
+                                        <TableHead>Origen</TableHead>
+                                        <TableHead>|f^(n+1)(x)|</TableHead>
+                                      </TableRow>
+                                    </TableHeader>
+                                    <TableBody>
+                                      {result.error_analysis.derivative_info.f_n1_eval_points.map((pt, i) => (
+                                        <TableRow key={`f-eval-${i}`}>
+                                          <TableCell>{pt.x}</TableCell>
+                                          <TableCell>{pt.source}</TableCell>
+                                          <TableCell>{pt.abs_value}</TableCell>
+                                        </TableRow>
+                                      ))}
+                                    </TableBody>
+                                  </Table>
+                                </div>
+
+                                <div className="space-y-2">
+                                  <p className="text-sm font-medium">Comparativa de |w(x)|</p>
+                                  <p className="text-xs text-muted-foreground">
+                                    Se evalua en raices de w'(x) y en los limites del intervalo.
+                                  </p>
+                                  <Table>
+                                    <TableHeader>
+                                      <TableRow>
+                                        <TableHead>x</TableHead>
+                                        <TableHead>Origen</TableHead>
+                                        <TableHead>|w(x)|</TableHead>
+                                      </TableRow>
+                                    </TableHeader>
+                                    <TableBody>
+                                      {result.error_analysis.derivative_info.w_eval_points.map((pt, i) => (
+                                        <TableRow key={`w-eval-${i}`}>
+                                          <TableCell>{pt.x}</TableCell>
+                                          <TableCell>{pt.source}</TableCell>
+                                          <TableCell>{pt.abs_value}</TableCell>
+                                        </TableRow>
+                                      ))}
+                                    </TableBody>
+                                  </Table>
+                                </div>
+                              </div>
+                            </DialogContent>
+                          </Dialog>
+                        )}
+                      </div>
                     )}
                     {result.error_analysis.local_error && (
                       <div className="space-y-1">

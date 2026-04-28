@@ -162,6 +162,15 @@ export interface InterpolationErrorAnalysis {
     interp_value: number;
     abs_error: number;
   } | null;
+  derivative_info?: {
+    n_plus_1: number;
+    f_n1_latex: string;
+    f_n2_latex: string;
+    w_expr_latex: string;
+    w_prime_latex: string;
+    f_n1_eval_points: { x: number; source: string; abs_value: number }[];
+    w_eval_points: { x: number; source: string; abs_value: number }[];
+  } | null;
 }
 
 export interface InterpolationResponse {
@@ -244,6 +253,13 @@ export interface IntegrationResponse {
   exact_integral?: number;
   error?: number;
   truncation_error?: number;
+  truncation_error_info?: {
+    derivative_order: number;
+    derivative_latex: string;
+    critical_derivative_order: number | null;
+    critical_derivative_latex: string | null;
+    evaluation_points: { x: number; source: string; abs_value: number }[];
+  } | null;
   f_expr_latex?: string;
   source?: "function" | "table";
 }
@@ -254,6 +270,9 @@ export interface MonteCarloRequest {
   dimension: 1 | 2 | 3;
   bounds: [number, number][];
   n: number;
+  confidence_level?: number;
+  max_standard_error?: number;
+  max_confidence_half_width?: number;
   seed?: number;
   max_points_to_return?: number;
 }
@@ -278,8 +297,14 @@ export interface MonteCarloResponse {
   seed?: number;
   domain_volume: number;
   estimate: number;
+  standard_deviation: number;
   standard_error: number;
-  confidence_95_half_width: number;
+  standard_deviation_raw: number;
+  standard_error_raw: number;
+  confidence_level: number;
+  confidence_z: number;
+  confidence_half_width: number;
+  min_n_required?: number | null;
   exact_integral?: number;
   abs_error?: number;
   method_details?: {
@@ -335,6 +360,7 @@ export interface DifferentialEquationAnalyticSolution {
   satisfies_initial_condition?: boolean | null;
   solution_latex: string;
   solution_expr_latex: string;
+  solution_expr_plot?: string | null;
   steps: DifferentialEquationAnalyticStep[];
 }
 

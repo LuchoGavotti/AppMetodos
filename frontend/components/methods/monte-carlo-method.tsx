@@ -35,8 +35,18 @@ const THEORY_FORMULAS = [
   },
   {
     label: "Error Estandar",
-    latex: "SE \\approx \\frac{\\sigma}{\\sqrt{n}}",
+    latex: "EE \\approx \\frac{\\sigma}{\\sqrt{n}}",
     description: "El error disminuye aproximadamente como 1/sqrt(n).",
+  },
+  {
+    label: "Desviacion Estandar",
+    latex: "\\sigma \\approx \\sqrt{\\frac{1}{n-1}\\sum_{i=1}^{n} (f(\\mathbf{x}_i) - \\bar{f})^2}",
+    description: "Mide la variabilidad de las muestras de la funcion.",
+  },
+  {
+    label: "Intervalo de Confianza",
+    latex: "IC = I \\pm z_{(\\alpha/2)} \\cdot EE * V",
+    description: "El intervalo de confianza se calcula multiplicando el error estandar por el valor critico z. V = (b-a)(d-c)...",
   },
 ];
 
@@ -48,7 +58,12 @@ export function MonteCarloMethod() {
   const [method, setMethod] = React.useState<MCMethod>("mean-value");
   const [func, setFunc] = React.useState("sin(x)");
   const [n, setN] = React.useState("10000");
-  const [seed, setSeed] = React.useState("12345");
+  const [seed, setSeed] = React.useState("42");
+  const [confidence, setConfidence] = React.useState("0.95");
+  const [nConstraint, setNConstraint] = React.useState<"max_standard_error" | "max_confidence_half_width">(
+    "max_standard_error"
+  );
+  const [nConstraintValue, setNConstraintValue] = React.useState("");
 
   const [xMin, setXMin] = React.useState("0");
   const [xMax, setXMax] = React.useState("3.1415926535");
@@ -90,6 +105,15 @@ export function MonteCarloMethod() {
         dimension,
         bounds: buildBounds(),
         n: Number(n),
+        confidence_level: Number(confidence),
+        max_standard_error:
+          nConstraint === "max_standard_error" && nConstraintValue.trim() !== ""
+            ? Number(nConstraintValue)
+            : undefined,
+        max_confidence_half_width:
+          nConstraint === "max_confidence_half_width" && nConstraintValue.trim() !== ""
+            ? Number(nConstraintValue)
+            : undefined,
         seed: seed.trim() === "" ? undefined : Number(seed),
         max_points_to_return: 2500,
       });
@@ -169,7 +193,7 @@ export function MonteCarloMethod() {
       error={error}
       success={
         result
-          ? `Integral estimada: ${result.estimate} (IC95 +/- ${result.confidence_95_half_width})`
+          ? `Integral estimada: ${result.estimate} (IC ${(result.confidence_level * 100).toFixed(1)}% +/- ${result.confidence_half_width})`
           : null
       }
       isLoading={isLoading}
@@ -245,6 +269,50 @@ export function MonteCarloMethod() {
             </div>
           </div>
 
+            <div className="space-y-2">
+              <Label htmlFor="mc-confidence">Confianza (0-1)</Label>
+              <Input
+                id="mc-confidence"
+                type="number"
+                min={0.5}
+                max={0.9999}
+                step="0.01"
+                value={confidence}
+                onChange={(e) => setConfidence(e.target.value)}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>Criterio para n minimo</Label>
+              <Select
+                value={nConstraint}
+                onValueChange={(value) => setNConstraint(value as typeof nConstraint)}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="max_standard_error">Error estandar maximo</SelectItem>
+                  <SelectItem value="max_confidence_half_width">Intervalo de confianza maximo</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          <div className="space-y-2">
+            <Label htmlFor="mc-n-constraint">
+              {nConstraint === "max_standard_error"
+                ? "Error estandar maximo"
+                : "Ancho maximo del intervalo (+/-)"}
+            </Label>
+            <Input
+              id="mc-n-constraint"
+              type="number"
+              min={0}
+              step="any"
+              value={nConstraintValue}
+              onChange={(e) => setNConstraintValue(e.target.value)}
+              placeholder="opcional"
+            />
+          </div>
+
           <div className="space-y-2">
             <Label>Cotas de integracion</Label>
             <div className="grid grid-cols-2 gap-2">
@@ -305,10 +373,17 @@ export function MonteCarloMethod() {
           <Card className="glass-card">
             <CardContent className="pt-6 text-sm space-y-2">
               <p><strong>Estimacion:</strong> {result.estimate}</p>
-              <p><strong>Error estandar:</strong> {result.standard_error}</p>
-              <p><strong>IC 95% (+/-):</strong> {result.confidence_95_half_width}</p>
+              <p><strong>Valor critico (z):</strong> {result.confidence_z}</p>
+              <p><strong>Desviacion estandar (sin volumen):</strong> {result.standard_deviation_raw}</p>
+              <p><strong>Error estandar (sin volumen):</strong> {result.standard_error_raw}</p>
+              <p><strong>Desviacion estandar (con volumen):</strong> {result.standard_deviation}</p>
+              <p><strong>Error estandar (con volumen):</strong> {result.standard_error}</p>
+              <p><strong>IC {(result.confidence_level * 100).toFixed(1)}% (+/-):</strong> {result.confidence_half_width}</p>
               <p><strong>Volumen del dominio:</strong> {result.domain_volume}</p>
               <p><strong>Muestras usadas:</strong> {result.n_used} / {result.n_requested}</p>
+              {result.min_n_required !== undefined && result.min_n_required !== null && (
+                <p><strong>n minimo sugerido:</strong> {result.min_n_required}</p>
+              )}
               {result.exact_integral !== undefined && (
                 <p><strong>Integral exacta (si disponible):</strong> {result.exact_integral}</p>
               )}

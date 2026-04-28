@@ -76,6 +76,9 @@ class MonteCarloRequest(BaseModel):
     dimension: Literal[1, 2, 3] = Field(default=1)
     bounds: list[list[float]] = Field(..., description="Bounds per dimension: [[min,max], ...]")
     n: int = Field(default=10000, ge=100, le=1_000_000)
+    confidence_level: float = Field(default=0.95, ge=0.5, lt=1.0)
+    max_standard_error: Optional[float] = Field(default=None, gt=0)
+    max_confidence_half_width: Optional[float] = Field(default=None, gt=0)
     seed: Optional[int] = Field(default=None)
     max_points_to_return: int = Field(default=2000, ge=100, le=10000)
 
@@ -136,6 +139,40 @@ def evaluate_ode_func(expr, x_sym, y_sym, x_val: float, y_val: float) -> float:
             status_code=400,
             detail=f"Cannot evaluate differential equation at (x={x_val}, y={y_val}): {str(e)}"
         )
+
+
+def normal_quantile(p: float) -> float:
+    """Approximate inverse CDF of the standard normal distribution."""
+    if not 0 < p < 1:
+        raise ValueError("p must be in (0, 1)")
+
+    # Coefficients for the rational approximations.
+    a = [-3.969683028665376e+01, 2.209460984245205e+02, -2.759285104469687e+02,
+         1.383577518672690e+02, -3.066479806614716e+01, 2.506628277459239e+00]
+    b = [-5.447609879822406e+01, 1.615858368580409e+02, -1.556989798598866e+02,
+         6.680131188771972e+01, -1.328068155288572e+01]
+    c = [-7.784894002430293e-03, -3.223964580411365e-01, -2.400758277161838e+00,
+         -2.549732539343734e+00, 4.374664141464968e+00, 2.938163982698783e+00]
+    d = [7.784695709041462e-03, 3.224671290700398e-01, 2.445134137142996e+00,
+         3.754408661907416e+00]
+
+    plow = 0.02425
+    phigh = 1 - plow
+
+    if p < plow:
+        q = math.sqrt(-2 * math.log(p))
+        return (((((c[0]*q + c[1])*q + c[2])*q + c[3])*q + c[4])*q + c[5]) / \
+            ((((d[0]*q + d[1])*q + d[2])*q + d[3])*q + 1)
+
+    if p > phigh:
+        q = math.sqrt(-2 * math.log(1 - p))
+        return -(((((c[0]*q + c[1])*q + c[2])*q + c[3])*q + c[4])*q + c[5]) / \
+            ((((d[0]*q + d[1])*q + d[2])*q + d[3])*q + 1)
+
+    q = p - 0.5
+    r = q * q
+    return (((((a[0]*r + a[1])*r + a[2])*r + a[3])*r + a[4])*r + a[5]) * q / \
+        (((((b[0]*r + b[1])*r + b[2])*r + b[3])*r + b[4])*r + 1)
 
 
 def try_symbolic_ode_solution(expr, x_sym, y_sym, x0: float, y0: float):
@@ -238,6 +275,7 @@ def try_symbolic_ode_solution(expr, x_sym, y_sym, x0: float, y0: float):
         "satisfies_initial_condition": satisfies_initial_condition,
         "solution_latex": sp.latex(solution_eq),
         "solution_expr_latex": sp.latex(solution_rhs),
+        "solution_expr_plot": str(solution_rhs).replace("**", "^"),
         "steps": steps,
     }
 
@@ -964,17 +1002,6 @@ async def lagrange_interpolation(req: InterpolationRequest):
                 if p.is_real and x_min <= float(p.evalf()) <= x_max
             ]
 
-            eval_points_f = critical_points_f + [x_min, x_max]
-
-            M = 0
-            for xi in eval_points_f:
-                try:
-                    val = abs(float(f_n1.subs(true_x, xi).evalf()))
-                    if np.isfinite(val):
-                        M = max(M, val)
-                except:
-                    continue
-
             # ---- PRODUCTORIA ----
             w_expr = 1
             for xi in req.x_values:
@@ -993,23 +1020,73 @@ async def lagrange_interpolation(req: InterpolationRequest):
                 if p.is_real and x_min <= float(p.evalf()) <= x_max
             ]
 
-            eval_points_w = critical_points_w + [x_min, x_max]
+            def build_eval_points(points):
+                combined = list(points) + [x_min, x_max]
+                seen = set()
+                ordered = []
+                for value in combined:
+                    key = round(float(value), 10)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    ordered.append(float(value))
+                return ordered
+
+            def point_source(value):
+                if abs(value - x_min) <= 1e-8 or abs(value - x_max) <= 1e-8:
+                    return "limite del intervalo"
+                return "raiz de derivada"
+
+            eval_points_f = build_eval_points(critical_points_f)
+            eval_points_w = build_eval_points(critical_points_w)
+
+            M = 0
+            f_n1_eval_points = []
+            for xi in eval_points_f:
+                try:
+                    val = abs(float(f_n1.subs(true_x, xi).evalf()))
+                    if np.isfinite(val):
+                        M = max(M, val)
+                        f_n1_eval_points.append({
+                            "x": round(float(xi), 10),
+                            "source": point_source(xi),
+                            "abs_value": round(float(val), 10),
+                        })
+                except:
+                    continue
 
             W = 0
+            w_eval_points = []
             for xi in eval_points_w:
                 try:
                     val = abs(float(w_expr.subs(true_x, xi).evalf()))
                     if np.isfinite(val):
                         W = max(W, val)
+                        w_eval_points.append({
+                            "x": round(float(xi), 10),
+                            "source": point_source(xi),
+                            "abs_value": round(float(val), 10),
+                        })
                 except:
                     continue
 
             global_max_error = (M / math.factorial(n + 1)) * W
             at_x = None  # ya no buscamos el punto exacto
 
+            derivative_info = {
+                "n_plus_1": n + 1,
+                "f_n1_latex": sp.latex(f_n1),
+                "f_n2_latex": sp.latex(f_n2),
+                "w_expr_latex": sp.latex(w_expr),
+                "w_prime_latex": sp.latex(w_prime),
+                "f_n1_eval_points": f_n1_eval_points,
+                "w_eval_points": w_eval_points,
+            }
+
         except Exception:
             global_max_error = None
             at_x = None
+            derivative_info = None
 
         # =========================
         # ERROR LOCAL EN UN PUNTO
@@ -1042,6 +1119,7 @@ async def lagrange_interpolation(req: InterpolationRequest):
             "global_max_error": round(global_max_error, 10) if global_max_error is not None else None,
             "global_max_error_at_x": at_x,  # queda None porque ahora es cota
             "local_error": point_error,
+            "derivative_info": derivative_info,
         }
     
     polynomial_exact_termwise = polynomial_termwise_form(polynomial_simplified, x, numeric=False)
@@ -1320,16 +1398,34 @@ async def numerical_integration(req: IntegrationRequest):
             })
     
     truncation_error = None
+    truncation_error_info = None
     if req.function:
         try:
             if req.method in ["left_rectangle", "right_rectangle", "midpoint"]:
                 second_derivative = sp.diff(f_expr, x, 2)
-                probe_points = np.linspace(a, b, min(200, max(50, n * 5)))
-                m2 = max(abs(float(second_derivative.subs(x, xi).evalf())) for xi in probe_points)
+                probe_points = np.linspace(a, b, min(60, max(20, n * 2)))
+                eval_points = []
+                m2 = 0
+                for xi in probe_points:
+                    val = abs(float(second_derivative.subs(x, xi).evalf()))
+                    if np.isfinite(val):
+                        m2 = max(m2, val)
+                        eval_points.append({
+                            "x": round(float(xi), 10),
+                            "source": "muestreo",
+                            "abs_value": round(float(val), 10),
+                        })
                 if req.method == "midpoint":
                     truncation_error = ((b - a) * (h ** 2) * m2) / 24.0
                 else:
                     truncation_error = ((b - a) * h * m2) / 2.0
+                truncation_error_info = {
+                    "derivative_order": 2,
+                    "derivative_latex": sp.latex(second_derivative),
+                    "critical_derivative_order": None,
+                    "critical_derivative_latex": None,
+                    "evaluation_points": eval_points,
+                }
             elif req.method == "trapezoidal":
                 second_derivative = sp.diff(f_expr, x, 2)
                 third_derivative = sp.diff(f_expr, x, 3)
@@ -1344,12 +1440,27 @@ async def numerical_integration(req: IntegrationRequest):
 
                 evaluation_points = critical_points + [a, b]
 
-                m2 = max(
-                    abs(float(second_derivative.subs(x, xi).evalf()))
-                    for xi in evaluation_points
-                )
+                eval_points = []
+                m2 = 0
+                for xi in evaluation_points:
+                    val = abs(float(second_derivative.subs(x, xi).evalf()))
+                    if np.isfinite(val):
+                        m2 = max(m2, val)
+                        source = "limite del intervalo" if xi in [a, b] else "raiz de derivada"
+                        eval_points.append({
+                            "x": round(float(xi), 10),
+                            "source": source,
+                            "abs_value": round(float(val), 10),
+                        })
 
                 truncation_error = (b - a) ** 3 / (12 * n ** 2) * m2
+                truncation_error_info = {
+                    "derivative_order": 2,
+                    "derivative_latex": sp.latex(second_derivative),
+                    "critical_derivative_order": 3,
+                    "critical_derivative_latex": sp.latex(third_derivative),
+                    "evaluation_points": eval_points,
+                }
     
             elif req.method == "simpson_1_3":
                 fourth_derivative = sp.diff(f_expr, x, 4)
@@ -1365,11 +1476,26 @@ async def numerical_integration(req: IntegrationRequest):
 
                 evaluation_points = critical_points + [a, b]
 
-                m4 = max(
-                    abs(float(fourth_derivative.subs(x, xi).evalf()))
-                    for xi in evaluation_points
-                )
+                eval_points = []
+                m4 = 0
+                for xi in evaluation_points:
+                    val = abs(float(fourth_derivative.subs(x, xi).evalf()))
+                    if np.isfinite(val):
+                        m4 = max(m4, val)
+                        source = "limite del intervalo" if xi in [a, b] else "raiz de derivada"
+                        eval_points.append({
+                            "x": round(float(xi), 10),
+                            "source": source,
+                            "abs_value": round(float(val), 10),
+                        })
                 truncation_error = (b - a) ** 5 / (180 * n ** 4) * m4
+                truncation_error_info = {
+                    "derivative_order": 4,
+                    "derivative_latex": sp.latex(fourth_derivative),
+                    "critical_derivative_order": 5,
+                    "critical_derivative_latex": sp.latex(fifth_derivative),
+                    "evaluation_points": eval_points,
+                }
             elif req.method == "simpson_3_8":
                 fourth_derivative = sp.diff(f_expr, x, 4)
                 fifth_derivative = sp.diff(f_expr, x, 5)
@@ -1384,13 +1510,29 @@ async def numerical_integration(req: IntegrationRequest):
 
                 evaluation_points = critical_points + [a, b]
 
-                m4 = max(
-                    abs(float(fourth_derivative.subs(x, xi).evalf()))
-                    for xi in evaluation_points
-                )
+                eval_points = []
+                m4 = 0
+                for xi in evaluation_points:
+                    val = abs(float(fourth_derivative.subs(x, xi).evalf()))
+                    if np.isfinite(val):
+                        m4 = max(m4, val)
+                        source = "limite del intervalo" if xi in [a, b] else "raiz de derivada"
+                        eval_points.append({
+                            "x": round(float(xi), 10),
+                            "source": source,
+                            "abs_value": round(float(val), 10),
+                        })
                 truncation_error = (b - a) ** 5 / (6480 * n ** 4) * m4
+                truncation_error_info = {
+                    "derivative_order": 4,
+                    "derivative_latex": sp.latex(fourth_derivative),
+                    "critical_derivative_order": 5,
+                    "critical_derivative_latex": sp.latex(fifth_derivative),
+                    "evaluation_points": eval_points,
+                }
         except Exception:
             truncation_error = None
+            truncation_error_info = None
 
     # Calculate exact integral if possible
     try:
@@ -1418,6 +1560,7 @@ async def numerical_integration(req: IntegrationRequest):
         "exact_integral": round(exact_integral, 10) if exact_integral is not None else None,
         "error": round(error, 10) if error is not None else None,
         "truncation_error": round(float(truncation_error), 10) if truncation_error is not None else None,
+        "truncation_error_info": truncation_error_info,
         "f_expr_latex": sp.latex(f_expr) if f_expr is not None else None,
         "source": "table" if from_table else "function"
     }
@@ -1426,6 +1569,14 @@ async def numerical_integration(req: IntegrationRequest):
 @app.post("/monte-carlo")
 async def monte_carlo_integration(req: MonteCarloRequest):
     """Monte Carlo integration in 1D/2D/3D using hit-or-miss or mean-value methods."""
+    if req.max_standard_error is not None and req.max_standard_error <= 0:
+        raise HTTPException(status_code=400, detail="max_standard_error must be positive")
+    if req.max_confidence_half_width is not None and req.max_confidence_half_width <= 0:
+        raise HTTPException(status_code=400, detail="max_confidence_half_width must be positive")
+
+    confidence = float(req.confidence_level)
+    z_value = normal_quantile((1 + confidence) / 2)
+
     bounds_array = normalize_bounds(req.bounds, req.dimension)
     domain_volume = compute_box_volume(bounds_array)
     rng = make_rng(req.seed)
@@ -1451,11 +1602,17 @@ async def monte_carlo_integration(req: MonteCarloRequest):
     used_n = int(f_values.size)
 
     method_details = {}
+    sigma_estimate = 0.0
+    raw_std_estimate = 0.0
+    raw_standard_error = 0.0
     if req.method == "mean-value":
         mean_val = float(np.mean(f_values))
         estimate = domain_volume * mean_val
         std_val = float(np.std(f_values, ddof=1)) if used_n > 1 else 0.0
         standard_error = domain_volume * std_val / np.sqrt(used_n) if used_n > 1 else 0.0
+        sigma_estimate = domain_volume * std_val
+        raw_std_estimate = std_val
+        raw_standard_error = std_val / np.sqrt(used_n) if used_n > 1 else 0.0
 
         contributions = domain_volume * f_values
         accept_flags = None
@@ -1476,6 +1633,9 @@ async def monte_carlo_integration(req: MonteCarloRequest):
         estimate = domain_volume * z_height * float(np.mean(signed_hits))
         std_hits = float(np.std(signed_hits, ddof=1)) if used_n > 1 else 0.0
         standard_error = domain_volume * z_height * std_hits / np.sqrt(used_n) if used_n > 1 else 0.0
+        sigma_estimate = domain_volume * z_height * std_hits
+        raw_std_estimate = std_hits
+        raw_standard_error = std_hits / np.sqrt(used_n) if used_n > 1 else 0.0
 
         contributions = domain_volume * z_height * signed_hits
         accept_flags = signed_hits != 0
@@ -1490,6 +1650,13 @@ async def monte_carlo_integration(req: MonteCarloRequest):
 
     exact_integral = maybe_exact_integral(expr, symbols, bounds_array)
     abs_error = abs(exact_integral - estimate) if exact_integral is not None else None
+
+    min_n_required = None
+    if sigma_estimate > 0:
+        if req.max_confidence_half_width is not None:
+            min_n_required = int(math.ceil((z_value * sigma_estimate / req.max_confidence_half_width) ** 2))
+        elif req.max_standard_error is not None:
+            min_n_required = int(math.ceil((sigma_estimate / req.max_standard_error) ** 2))
 
     point_limit = min(req.max_points_to_return, used_n)
     vis_points = []
@@ -1524,8 +1691,14 @@ async def monte_carlo_integration(req: MonteCarloRequest):
         "seed": req.seed,
         "domain_volume": round(float(domain_volume), 10),
         "estimate": round(float(estimate), 10),
+        "standard_deviation": round(float(sigma_estimate), 10),
         "standard_error": round(float(standard_error), 10),
-        "confidence_95_half_width": round(float(1.96 * standard_error), 10),
+        "standard_deviation_raw": round(float(raw_std_estimate), 10),
+        "standard_error_raw": round(float(raw_standard_error), 10),
+        "confidence_level": round(float(confidence), 6),
+        "confidence_z": round(float(z_value), 6),
+        "confidence_half_width": round(float(z_value * standard_error), 10),
+        "min_n_required": min_n_required,
         "exact_integral": round(float(exact_integral), 10) if exact_integral is not None else None,
         "abs_error": round(float(abs_error), 10) if abs_error is not None else None,
         "method_details": method_details,

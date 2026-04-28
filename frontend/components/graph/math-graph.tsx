@@ -85,6 +85,11 @@ function formatTick(value: number, step: number): string {
   return value.toFixed(decimals).replace(/\.0+$|(?<=\.[0-9]*?)0+$/g, "");
 }
 
+function formatPointValue(value: number): string {
+  if (!Number.isFinite(value)) return "";
+  return value.toFixed(6).replace(/\.0+$|(?<=\.[0-9]*?)0+$/g, "");
+}
+
 export function MathGraph({
   functions = [],
   points = [],
@@ -299,12 +304,16 @@ export function MathGraph({
 
         {/* Render points */}
         {points.map((pt, i) => (
-          <Point
-            key={`pt-${i}`}
-            x={pt.x}
-            y={pt.y}
-            color={pt.color || defaultColors[i % defaultColors.length]}
-          />
+          <g key={`pt-${i}`}>
+            <title>
+              {pt.label || `(${formatPointValue(pt.x)}, ${formatPointValue(pt.y)})`}
+            </title>
+            <Point
+              x={pt.x}
+              y={pt.y}
+              color={pt.color || defaultColors[i % defaultColors.length]}
+            />
+          </g>
         ))}
 
         {/* y = x line for fixed point iteration */}

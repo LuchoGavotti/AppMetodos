@@ -4,13 +4,7 @@ import * as React from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import { Card, CardContent } from "@/components/ui/card";
 import {
   Dialog,
@@ -30,7 +24,6 @@ import { getAutoViewBox } from "@/lib/graph-range";
 import { evaluate } from "@/lib/math-parser";
 import type {
   APIError,
-  DifferentialEquationIteration,
   DifferentialEquationResponse,
 } from "@/types/methods";
 import { CircleHelp, Loader2, Play } from "lucide-react";
@@ -38,51 +31,33 @@ import { CircleHelp, Loader2, Play } from "lucide-react";
 const THEORY_FORMULAS = [
   {
     label: "Euler",
-    latex: "y_{n+1}=y_n+h\,f(x_n,y_n)",
+    latex: "y_{n+1}=y_n+h*f(x_n,y_n)",
+    description: "Aproxima la solucion usando la pendiente en el punto inicial del intervalo.",
   },
   {
     label: "Euler Mejorado (Heun)",
-    latex:
-      "k_1=f(x_n,y_n),\quad k_2=f(x_n+h,y_n+h\,k_1),\\ y_{n+1}=y_n+\frac{h}{2}(k_1+k_2)",
+    latex: "y_{n+1}=y_n+\\frac{h}{2}*[f(x_n,y_n)+f(x_{n+1},y_{n+1})]",
+    description: "Aproxima la solucion usando la pendiente en el punto inicial del intervalo, corregida con la pendiente en el punto medio.",
   },
   {
     label: "Runge-Kutta de Orden 4",
-    latex:
-      "k_1=f(x_n,y_n),\;k_2=f(x_n+\tfrac{h}{2},y_n+\tfrac{h}{2}k_1),\\k_3=f(x_n+\tfrac{h}{2},y_n+\tfrac{h}{2}k_2),\;k_4=f(x_n+h,y_n+h\,k_3),\\y_{n+1}=y_n+\tfrac{h}{6}(k_1+2k_2+2k_3+k_4)",
+    latex: "\\begin{array}{}y_{n+1}=y_n+\\frac{h}{6}*(k_1+2k_2+2k_3+k_4)\\\\\\begin{array}{l}k_1=f(x_n,y_n)\\\\k_2=f(x_n+\\frac{h}{2},y_n+\\frac{h}{2}k_1)\\\\k_3=f(x_n+\\frac{h}{2},y_n+\\frac{h}{2}k_2)\\\\k_4=f(x_n+h,y_n+hk_3)\\end{array}\\end{array}",
+    description: "Aproxima la solucion usando una combinacion ponderada de pendientes en diferentes puntos del intervalo.",
   },
 ];
 
-function methodLabel(method: "euler" | "improved_euler" | "runge_kutta"): string {
+type MethodId = "euler" | "improved_euler" | "runge_kutta";
+
+const METHOD_OPTIONS: Array<{ id: MethodId; label: string; color: string }> = [
+  { id: "euler", label: "Euler", color: "#0ea5e9" },
+  { id: "improved_euler", label: "Euler Mejorado", color: "#f59e0b" },
+  { id: "runge_kutta", label: "Runge-Kutta 4", color: "#22c55e" },
+];
+
+function methodLabel(method: MethodId): string {
   if (method === "euler") return "Euler";
   if (method === "improved_euler") return "Euler Mejorado";
   return "Runge-Kutta 4";
-}
-
-function iterationColumns(method: "euler" | "improved_euler" | "runge_kutta") {
-  const base = [
-    { key: "iteration", label: "Iter" },
-    { key: "x_i", label: "x_i" },
-    { key: "y_i", label: "y_i" },
-    { key: "x_next", label: "x_{i+1}" },
-    { key: "y_next", label: "y_{i+1}" },
-    { key: "slope", label: "Pendiente" },
-    { key: "k1", label: "k1" },
-  ];
-
-  if (method === "improved_euler") {
-    return [...base, { key: "k2", label: "k2" }];
-  }
-
-  if (method === "runge_kutta") {
-    return [
-      ...base,
-      { key: "k2", label: "k2" },
-      { key: "k3", label: "k3" },
-      { key: "k4", label: "k4" },
-    ];
-  }
-
-  return base;
 }
 
 type NumericFieldId = "x0" | "y0" | "xMin" | "xMax" | "h";
@@ -129,15 +104,35 @@ export function DifferentialEquationMethod() {
   const [xMin, setXMin] = React.useState("0");
   const [xMax, setXMax] = React.useState("2");
   const [h, setH] = React.useState("0.2");
-  const [method, setMethod] = React.useState<"euler" | "improved_euler" | "runge_kutta">(
-    "runge_kutta"
-  );
+  const [selectedMethods, setSelectedMethods] = React.useState<Record<MethodId, boolean>>({
+    euler: false,
+    improved_euler: false,
+    runge_kutta: true,
+  });
+  const [showSeries, setShowSeries] = React.useState<Record<MethodId, boolean>>({
+    euler: false,
+    improved_euler: false,
+    runge_kutta: true,
+  });
+  const [showAnalytic, setShowAnalytic] = React.useState(true);
 
-  const [result, setResult] = React.useState<DifferentialEquationResponse | null>(null);
+  const [resultsByMethod, setResultsByMethod] = React.useState<
+    Partial<Record<MethodId, DifferentialEquationResponse>> | null
+  >(null);
   const [error, setError] = React.useState<string | null>(null);
   const [isLoading, setIsLoading] = React.useState(false);
   const [activeNumericField, setActiveNumericField] = React.useState<NumericFieldId>("x0");
   const functionInputRef = React.useRef<HTMLInputElement>(null);
+
+  const selectedMethodIds = React.useMemo(
+    () => METHOD_OPTIONS.filter((opt) => selectedMethods[opt.id]).map((opt) => opt.id),
+    [selectedMethods]
+  );
+
+  const primaryResult = React.useMemo(() => {
+    if (!resultsByMethod || selectedMethodIds.length === 0) return null;
+    return resultsByMethod[selectedMethodIds[0]] ?? null;
+  }, [resultsByMethod, selectedMethodIds]);
 
   const applyConstantToField = React.useCallback((constantName: "e" | "pi") => {
     const updater = (prev: string) => appendMathConstant(prev, constantName);
@@ -161,16 +156,35 @@ export function DifferentialEquationMethod() {
       const parsedXMax = parseNumericExpression(xMax, "x maximo");
       const parsedH = parseNumericExpression(h, "paso h");
 
-      const response = await api.differentialEquation({
-        equation,
-        x0: parsedX0,
-        y0: parsedY0,
-        x_min: parsedXMin,
-        x_max: parsedXMax,
-        h: parsedH,
-        method,
-      });
-      setResult(response);
+      if (selectedMethodIds.length === 0) {
+        setError("Selecciona al menos un metodo para resolver la EDO.");
+        setIsLoading(false);
+        return;
+      }
+
+      const responses = await Promise.all(
+        selectedMethodIds.map((selected) =>
+          api.differentialEquation({
+            equation,
+            x0: parsedX0,
+            y0: parsedY0,
+            x_min: parsedXMin,
+            x_max: parsedXMax,
+            h: parsedH,
+            method: selected,
+          })
+        )
+      );
+
+      const nextResults = responses.reduce(
+        (acc, response) => {
+          acc[response.method as MethodId] = response;
+          return acc;
+        },
+        {} as Partial<Record<MethodId, DifferentialEquationResponse>>
+      );
+
+      setResultsByMethod(nextResults);
     } catch (err) {
       if (err instanceof Error && !("detail" in (err as object))) {
         setError(err.message);
@@ -184,47 +198,54 @@ export function DifferentialEquationMethod() {
           setError("Ocurrio un error inesperado");
         }
       }
-      setResult(null);
+      setResultsByMethod(null);
     } finally {
       setIsLoading(false);
     }
   };
 
-  const graphPoints =
-    result?.points.map((p) => ({ x: p.x, y: p.y, color: "#2563eb" })) || [];
+  const graphPoints = METHOD_OPTIONS.flatMap((opt) => {
+    if (!showSeries[opt.id]) return [];
+    const points = resultsByMethod?.[opt.id]?.points ?? [];
+    return points.map((p) => ({ x: p.x, y: p.y, color: opt.color }));
+  });
 
-  const graphSegments = result?.points
-    ? result.points.slice(1).map((p, i) => ({
-        x1: result.points[i].x,
-        y1: result.points[i].y,
-        x2: p.x,
-        y2: p.y,
-        color: "#2563eb",
-      }))
-    : [];
+  const graphSegments = METHOD_OPTIONS.flatMap((opt) => {
+    if (!showSeries[opt.id]) return [];
+    const points = resultsByMethod?.[opt.id]?.points ?? [];
+    return points.slice(1).map((p, i) => ({
+      x1: points[i].x,
+      y1: points[i].y,
+      x2: p.x,
+      y2: p.y,
+      color: opt.color,
+    }));
+  });
 
   const xMinNum = parseNumericExpressionSafe(xMin);
   const xMaxNum = parseNumericExpressionSafe(xMax);
   const viewBox = getAutoViewBox({
     xMin: Number.isFinite(xMinNum) ? xMinNum : -5,
     xMax: Number.isFinite(xMaxNum) ? xMaxNum : 5,
+    functions:
+      showAnalytic && primaryResult?.analytic_solution?.solution_expr_plot
+        ? [primaryResult.analytic_solution.solution_expr_plot]
+        : [],
     points: graphPoints.map((p) => ({ x: p.x, y: p.y })),
     defaultY: [-5, 5],
   });
 
-  const tableData: Record<string, number | string>[] =
-    result?.iterations.map((it: DifferentialEquationIteration) => ({
-      iteration: it.iteration,
-      x_i: it.x_i,
-      y_i: it.y_i,
-      x_next: it.x_next,
-      y_next: it.y_next,
-      slope: it.slope,
-      k1: it.k1,
-      k2: it.k2 ?? "-",
-      k3: it.k3 ?? "-",
-      k4: it.k4 ?? "-",
-    })) || [];
+  const pointColumns = [
+    { key: "x", label: "x" },
+    { key: "y", label: "y" },
+    { key: "slope", label: "Pendiente" },
+    { key: "y_real", label: "y real" },
+    { key: "local_error", label: "Error local" },
+    { key: "k1", label: "k1" },
+    { key: "k2", label: "k2" },
+    { key: "k3", label: "k3" },
+    { key: "k4", label: "k4" },
+  ];
 
   return (
     <MethodContainer
@@ -240,8 +261,8 @@ export function DifferentialEquationMethod() {
       }
       error={error}
       success={
-        result
-          ? `Calculado con ${methodLabel(result.method)} en ${result.points.length} puntos`
+        primaryResult
+          ? `Calculado con ${selectedMethodIds.map(methodLabel).join(", ")} en ${primaryResult.points.length} puntos`
           : null
       }
       isLoading={isLoading}
@@ -258,9 +279,9 @@ export function DifferentialEquationMethod() {
               placeholder="ej.: x + y"
             />
             <ExpressionKeyboard inputRef={functionInputRef} setValue={setEquation} showY />
-            {result?.equation_latex && (
+            {primaryResult?.equation_latex && (
               <p className="text-xs text-muted-foreground">
-                <LaTeX math={`f(x,y)=${result.equation_latex}`} />
+                <LaTeX math={`f(x,y)=${primaryResult.equation_latex}`} />
               </p>
             )}
           </div>
@@ -328,22 +349,22 @@ export function DifferentialEquationMethod() {
               />
             </div>
             <div className="space-y-2">
-              <Label>Metodo</Label>
-              <Select
-                value={method}
-                onValueChange={(value) =>
-                  setMethod(value as "euler" | "improved_euler" | "runge_kutta")
-                }
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="euler">Euler</SelectItem>
-                  <SelectItem value="improved_euler">Euler Mejorado (Heun)</SelectItem>
-                  <SelectItem value="runge_kutta">Runge-Kutta 4</SelectItem>
-                </SelectContent>
-              </Select>
+              <Label>Metodos</Label>
+              <div className="space-y-2">
+                {METHOD_OPTIONS.map((opt) => (
+                  <label key={opt.id} className="flex items-center gap-2 text-sm">
+                    <Switch
+                      checked={selectedMethods[opt.id]}
+                      onCheckedChange={(checked) => {
+                        setSelectedMethods((prev) => ({ ...prev, [opt.id]: checked }));
+                        setShowSeries((prev) => ({ ...prev, [opt.id]: checked }));
+                        setResultsByMethod(null);
+                      }}
+                    />
+                    {opt.label}
+                  </label>
+                ))}
+              </div>
             </div>
           </div>
 
@@ -375,36 +396,70 @@ export function DifferentialEquationMethod() {
         </form>
       }
       graphPanel={
-        <MathGraph
-          points={graphPoints}
-          segments={graphSegments}
-          viewBox={viewBox}
-          height={360}
-        />
+        <div className="space-y-2">
+          <div className="flex flex-wrap items-center gap-3 px-2">
+            {METHOD_OPTIONS.map((opt) => (
+              <label key={`show-${opt.id}`} className="flex items-center gap-2 text-sm">
+                <Switch
+                  checked={showSeries[opt.id]}
+                  onCheckedChange={(checked) =>
+                    setShowSeries((prev) => ({ ...prev, [opt.id]: checked }))
+                  }
+                  disabled={!resultsByMethod?.[opt.id]}
+                />
+                {opt.label}
+              </label>
+            ))}
+            <label className="flex items-center gap-2 text-sm">
+              <Switch
+                checked={showAnalytic}
+                onCheckedChange={setShowAnalytic}
+                disabled={!primaryResult?.analytic_solution?.solution_expr_plot}
+              />
+              Solucion analitica
+            </label>
+          </div>
+          <MathGraph
+            points={graphPoints}
+            segments={graphSegments}
+            functions={
+              showAnalytic && primaryResult?.analytic_solution?.solution_expr_plot
+                ? [{
+                    expr: primaryResult.analytic_solution.solution_expr_plot,
+                    color: "#a855f7",
+                    label: "y(x)",
+                    opacity: 0.85,
+                  }]
+                : []
+            }
+            viewBox={viewBox}
+            height={360}
+          />
+        </div>
       }
       resultsPanel={
-        result ? (
+        primaryResult ? (
           <div className="space-y-4">
             <Card className="glass-card">
               <CardContent className="pt-6 text-sm space-y-2">
                 <p>
-                  <strong>Metodo:</strong> {methodLabel(result.method)}
+                  <strong>Metodos:</strong> {selectedMethodIds.map(methodLabel).join(", ")}
                 </p>
                 <p>
-                  <strong>Intervalo:</strong> [{result.x_min}, {result.x_max}] | <strong>h:</strong> {result.h}
+                  <strong>Intervalo:</strong> [{primaryResult.x_min}, {primaryResult.x_max}] | <strong>h:</strong> {primaryResult.h}
                 </p>
                 <p>
-                  <strong>Punto inicial:</strong> ({result.x0}, {result.y0})
+                  <strong>Punto inicial:</strong> ({primaryResult.x0}, {primaryResult.y0})
                 </p>
                 <p>
-                  <strong>Puntos calculados:</strong> {result.points.length}
+                  <strong>Puntos calculados:</strong> {primaryResult.points.length}
                 </p>
-                {result.analytic_solution?.available ? (
+                {primaryResult.analytic_solution?.available ? (
                   <div className="space-y-1">
                     <div className="flex items-center gap-2">
                       <strong>Solucion analitica:</strong>
                       <span className="text-muted-foreground">
-                        <LaTeX math={`y(x)=${result.analytic_solution.solution_expr_latex}`} />
+                        <LaTeX math={`y(x)=${primaryResult.analytic_solution.solution_expr_latex}`} />
                       </span>
                       <Dialog>
                         <DialogTrigger asChild>
@@ -426,12 +481,12 @@ export function DifferentialEquationMethod() {
                             </DialogDescription>
                           </DialogHeader>
                           <div className="space-y-4 pt-2">
-                            {result.analytic_solution.hint && (
+                            {primaryResult.analytic_solution.hint && (
                               <p className="text-sm text-muted-foreground">
-                                <strong>Metodo detectado:</strong> {result.analytic_solution.hint}
+                                <strong>Metodo detectado:</strong> {primaryResult.analytic_solution.hint}
                               </p>
                             )}
-                            {result.analytic_solution.steps.map((step, idx) => (
+                            {primaryResult.analytic_solution.steps.map((step, idx) => (
                               <div key={`${step.title}-${idx}`} className="space-y-1">
                                 <p className="font-medium text-sm">{step.title}</p>
                                 <p className="text-sm text-muted-foreground">{step.description}</p>
@@ -454,12 +509,51 @@ export function DifferentialEquationMethod() {
                 )}
               </CardContent>
             </Card>
-            <ResultsTable
-              title="Iteraciones"
-              columns={iterationColumns(result.method)}
-              data={tableData}
-              highlightLast={false}
-            />
+            {selectedMethodIds.map((selected) => {
+              const methodResult = resultsByMethod?.[selected];
+              if (!methodResult) return null;
+              const analyticExpr = methodResult.analytic_solution?.solution_expr_plot;
+              const tableData = methodResult.points.map((p, index) => {
+                const iteration = methodResult.iterations[index];
+                const slope = iteration?.slope ?? "-";
+                const k1 = iteration?.k1 ?? "-";
+                const k2 = iteration?.k2 ?? "-";
+                const k3 = iteration?.k3 ?? "-";
+                const k4 = iteration?.k4 ?? "-";
+
+                let yReal: number | string = "-";
+                let localError: number | string = "-";
+
+                if (analyticExpr) {
+                  const yTrue = evaluate(analyticExpr, p.x);
+                  if (Number.isFinite(yTrue)) {
+                    yReal = Number(yTrue.toFixed(10));
+                    localError = Number(Math.abs(yTrue - p.y).toFixed(10));
+                  }
+                }
+
+                return {
+                  x: p.x,
+                  y: p.y,
+                  slope,
+                  y_real: yReal,
+                  local_error: localError,
+                  k1,
+                  k2,
+                  k3,
+                  k4,
+                };
+              });
+              return (
+                <ResultsTable
+                  key={`table-${selected}`}
+                  title={`Puntos (${methodLabel(selected)})`}
+                  columns={pointColumns}
+                  data={tableData}
+                  highlightLast
+                />
+              );
+            })}
           </div>
         ) : null
       }

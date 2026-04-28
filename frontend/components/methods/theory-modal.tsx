@@ -55,7 +55,12 @@ export function TheoryModal({
           Teoria
         </Button>
       </DialogTrigger>
-      <DialogContent className={cn("max-w-2xl max-h-[85vh] overflow-auto", className)}>
+      <DialogContent
+        className={cn(
+          "max-w-none w-[min(96vw,80rem)] min-w-[min(56rem,96vw)] max-h-[85vh] overflow-auto",
+          className
+        )}
+      >
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription>{description}</DialogDescription>

@@ -5,6 +5,14 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
+import {
   Select,
   SelectContent,
   SelectItem,
@@ -22,6 +30,14 @@ import { getAutoViewBox } from "@/lib/graph-range";
 import { parseIntegerExpression, parseNumericExpression, parseNumericExpressionSafe } from "@/lib/numeric-expression";
 import type { APIError, IntegrationResponse } from "@/types/methods";
 import { Loader2, Play } from "lucide-react";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 
 type IntegrationMethodId =
   | "left_rectangle"
@@ -371,9 +387,75 @@ export function IntegrationMethod() {
                   </p>
                 )}
                 {result.truncation_error !== undefined && (
-                  <p>
-                    <strong>Cota de error de truncamiento:</strong> {result.truncation_error}
-                  </p>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p>
+                      <strong>Cota de error de truncamiento:</strong> {result.truncation_error}
+                    </p>
+                    {result.truncation_error_info && (
+                      <Dialog>
+                        <DialogTrigger asChild>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="icon"
+                            className="h-6 w-6 rounded-full text-xs"
+                            aria-label="Ver detalle de la cota"
+                          >
+                            +
+                          </Button>
+                        </DialogTrigger>
+                        <DialogContent className="max-w-none w-[min(96vw,80rem)] min-w-[min(56rem,96vw)] max-h-[85vh] overflow-auto">
+                          <DialogHeader>
+                            <DialogTitle>Detalle de la cota de truncamiento</DialogTitle>
+                            <DialogDescription>
+                              Derivadas utilizadas y puntos evaluados para el maximo.
+                            </DialogDescription>
+                          </DialogHeader>
+                          <div className="space-y-6 pt-2">
+                            <div className="space-y-2">
+                              <p className="text-sm font-medium">Derivadas utilizadas</p>
+                              <div className="space-y-2 text-sm text-muted-foreground">
+                                <LaTeX
+                                  block
+                                  math={`f^{(${result.truncation_error_info.derivative_order})}(x) = ${result.truncation_error_info.derivative_latex}`}
+                                />
+                                {result.truncation_error_info.critical_derivative_latex && (
+                                  <LaTeX
+                                    block
+                                    math={`f^{(${result.truncation_error_info.critical_derivative_order})}(x) = ${result.truncation_error_info.critical_derivative_latex}`}
+                                  />
+                                )}
+                              </div>
+                            </div>
+
+                            <div className="space-y-2">
+                              <p className="text-sm font-medium">
+                                Comparativa de |f^(k)(x)|
+                              </p>
+                              <Table>
+                                <TableHeader>
+                                  <TableRow>
+                                    <TableHead>x</TableHead>
+                                    <TableHead>Origen</TableHead>
+                                    <TableHead>|f^(k)(x)|</TableHead>
+                                  </TableRow>
+                                </TableHeader>
+                                <TableBody>
+                                  {result.truncation_error_info.evaluation_points.map((pt, i) => (
+                                    <TableRow key={`te-eval-${i}`}>
+                                      <TableCell>{pt.x}</TableCell>
+                                      <TableCell>{pt.source}</TableCell>
+                                      <TableCell>{pt.abs_value}</TableCell>
+                                    </TableRow>
+                                  ))}
+                                </TableBody>
+                              </Table>
+                            </div>
+                          </div>
+                        </DialogContent>
+                      </Dialog>
+                    )}
+                  </div>
                 )}
               </CardContent>
             </Card>
