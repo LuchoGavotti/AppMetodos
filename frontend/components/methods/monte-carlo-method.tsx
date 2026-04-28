@@ -261,7 +261,7 @@ export function MonteCarloMethod() {
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-2">
               <Label htmlFor="mc-n">Numero de muestras (n)</Label>
-              <Input id="mc-n" type="number" min={100} step={100} value={n} onChange={(e) => setN(e.target.value)} />
+              <Input id="mc-n" type="number" min={100} step={1} value={n} onChange={(e) => setN(e.target.value)} />
             </div>
             <div className="space-y-2">
               <Label htmlFor="mc-seed">Semilla</Label>
@@ -276,7 +276,7 @@ export function MonteCarloMethod() {
                 type="number"
                 min={0.5}
                 max={0.9999}
-                step="0.01"
+                step="0.0001"
                 value={confidence}
                 onChange={(e) => setConfidence(e.target.value)}
               />

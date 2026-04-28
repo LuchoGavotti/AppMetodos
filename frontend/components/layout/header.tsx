@@ -31,6 +31,18 @@ const DERIVATIVE_FORMULAS = [
       "Se utiliza para derivar funciones compuestas.",
   },
   {
+    label: "Derivadas trigonométricas (tan)",
+    latex: "\\frac{d}{dx}(\\tan x)=\\sec^2 x",
+    description:
+      "La derivada de la tangente es la secante al cuadrado.",
+  },
+  {
+    label: "Identidad útil (tan y sec)",
+    latex: "1 + \\tan^2 x = \\sec^2 x",
+    description:
+      "Permite reescribir la derivada de la tangente en términos de tan.",
+  },
+  {
     label: "Derivadas básicas",
     latex:
       "\\begin{array}{l}\n\\frac{d}{dx}(e^x)=e^x \\\\\n\\frac{d}{dx}(\\ln x)=\\frac{1}{x} \\\\\n\\frac{d}{dx}(\\sin x)=\\cos x \\\\\n\\frac{d}{dx}(\\cos x)=-\\sin x\n\\end{array}",
@@ -53,11 +65,25 @@ const INTEGRATION_FORMULAS = [
       "Se usa cuando el integrando es un producto de funciones. Se eligen u y dv de forma conveniente para simplificar la integral.",
   },
   {
+    label: "Integrales trigonométricas (tangente y secante)",
+    latex:
+      "\\begin{array}{l}\n\\int \\tan x \\, dx = -\\ln|\\cos x| + C \\\\\n\\int \\sec^2 x \\, dx = \\tan x + C \\\\\n\\int \\sec x \\tan x \\, dx = \\sec x + C\n\\end{array}",
+    description:
+      "Integrales fundamentales donde aparecen tangente y secante.",
+  },
+  {
+    label: "Identidades útiles (tan y sec)",
+    latex:
+      "\\begin{array}{l}\n\\tan^2 x = \\sec^2 x - 1 \\\\\n1 + \\tan^2 x = \\sec^2 x\n\\end{array}",
+    description:
+      "Relaciones clave para transformar integrales y simplificarlas.",
+  },
+  {
     label: "Integrales básicas",
     latex:
-      "\\begin{array}{l}\n\\int x^n dx = \\frac{x^{n+1}}{n+1} + C \\ (n \\neq -1) \\\\\n\\int \\frac{1}{x} dx = \\ln|x| + C \\\\\n\\int e^x dx = e^x + C \\\\\n\\int a^x dx = \\frac{a^x}{\\ln a} + C \\\\\n\\int \\sin x \\, dx = -\\cos x + C \\\\\n\\int \\cos x \\, dx = \\sin x + C\n\\end{array}",
+      "\\begin{array}{l}\n\\int x^n dx = \\frac{x^{n+1}}{n+1} + C \\ (n \\neq -1) \\\\\n\\int \\frac{1}{x} dx = \\ln|x| + C \\\\\n\\int e^x dx = e^x + C \\\\\n\\int \\sin x \\, dx = -\\cos x + C \\\\\n\\int \\cos x \\, dx = \\sin x + C\n\\end{array}",
     description:
-      "Incluye las integrales más comunes que sirven como base para resolver problemas más complejos.",
+      "Incluye las integrales más comunes que sirven como base.",
   },
 ];
 
