@@ -48,7 +48,12 @@ const THEORY_FORMULAS = [
     latex: "|E(x)| \\leq \\frac{f^{(n+1)}(\\xi)}{(n+1)!} \\prod_{i=0}^n |x-x_i|",
     description: "n + 1 = numero de nodos"
   },
-
+  {
+    label: "Calculo de raices para polinomio de grado 2",
+    latex: "x=\\frac{-b \\pm \\sqrt{b^2-4ac}}{2a}",
+    description:
+      "Permite encontrar las raíces de un polinomio cuadrático.",
+  },
 ];
 
 interface PointRow {
