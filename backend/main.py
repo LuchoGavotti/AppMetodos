@@ -56,8 +56,8 @@ class DerivativeRequest(BaseModel):
     function: Optional[str] = Field(None, description="Function string (if analytical)")
     x_values: Optional[list[float]] = Field(None, description="X values (if tabular)")
     y_values: Optional[list[float]] = Field(None, description="Y values (if tabular)")
-    x0: float = Field(..., description="Point to evaluate derivative")
-    h: float = Field(default=0.1, description="Step size")
+    x0: Optional[float] = Field(None, description="Point to evaluate derivative")
+    h: Optional[float] = Field(default=0.1, description="Step size")
     method: Literal["forward", "backward", "central"] = Field(default="central")
 
 class IntegrationRequest(BaseModel):
@@ -341,6 +341,39 @@ def evaluate_abs_derivative_at(expr, x_sym, x_val: float) -> tuple[sp.Expr, floa
                 detail=f"Cannot evaluate derivative at x={x_val}: numerical derivative resulted in NaN/Inf"
             )
         return dg_expr, abs(float(dg_val))
+
+
+def three_point_derivatives(
+    x0: float,
+    y0: float,
+    x1: float,
+    y1: float,
+    x2: float,
+    y2: float,
+    method: str,
+) -> tuple[float, float]:
+    """Evaluate first and second derivatives from three-point Lagrange interpolation."""
+    h1 = x1-x0
+    h2 = x2-x1
+    
+
+    if h1 == 0 or h2 == 0 or h1 != h2:
+        raise HTTPException(status_code=400, detail="Distance between points must be equal and non-zero")
+
+    if method == "forward":
+        first = (y1-y0)/h1
+        second = (y2 - 2*y1 + y0) / (h1**2)
+    elif method == "backward":
+        first = (y2-y1)/h2
+        second = (y2 - 2*y1 + y0) / (h2**2)
+    else:  # central
+        first = (y2-y0) / (2*h1)
+        second = (y2 - 2*y1 + y0) / (h1**2)
+
+    if not np.isfinite(first) or not np.isfinite(second):
+        raise HTTPException(status_code=400, detail="Derivative evaluation returned NaN/Inf")
+
+    return float(first), float(second)
 
 
 def make_rng(seed: Optional[int]) -> np.random.Generator:
@@ -1150,64 +1183,148 @@ async def lagrange_interpolation(req: InterpolationRequest):
 async def numerical_derivative(req: DerivativeRequest):
     """Numerical derivative approximation."""
     x = sp.Symbol('x')
-    
+
     if req.function:
         # Analytical function provided
         f_expr, x = parse_function(req.function)
         df_expr = sp.diff(f_expr, x)
+        d2f_expr = sp.diff(f_expr, x, 2)
+
+        if req.x0 is None or req.h is None:
+            raise HTTPException(status_code=400, detail="Provide x0 and h for function input")
+
         exact_derivative = float(df_expr.subs(x, req.x0).evalf())
+        exact_second_derivative = float(d2f_expr.subs(x, req.x0).evalf())
         
         def f(val):
             return evaluate_func(f_expr, x, val)
-    elif req.x_values and req.y_values:
-        # Tabular data
-        exact_derivative = None
-        f_expr = None
-        df_expr = None
-        
-        # Create interpolation function
-        from scipy import interpolate
-        f = interpolate.interp1d(req.x_values, req.y_values, kind='cubic', fill_value='extrapolate')
+    
+    elif req.x_values is not None and req.y_values is not None:
+        if len(req.x_values) != len(req.y_values):
+            raise HTTPException(status_code=400, detail="x_values and y_values must have same length")
+        if len(req.x_values) < 3:
+            raise HTTPException(status_code=400, detail="Need at least 3 points for derivatives")
+
+        points = sorted(
+            [(float(xi), float(yi)) for xi, yi in zip(req.x_values, req.y_values)],
+            key=lambda p: p[0],
+        )
+        for i in range(1, len(points)):
+            if points[i][0] == points[i - 1][0]:
+                raise HTTPException(status_code=400, detail="Duplicate x values are not allowed")
+        if not all(np.isfinite(xi) and np.isfinite(yi) for xi, yi in points):
+            raise HTTPException(status_code=400, detail="All x and y values must be finite")
+
+        derivatives = []
+        n = len(points)
+        for i in range(n):
+            if i == 0:
+                x0, y0 = points[0]
+                x1, y1 = points[1]
+                x2, y2 = points[2]
+                method = "forward"
+            elif i == n - 1:
+                x0, y0 = points[n - 3]
+                x1, y1 = points[n - 2]
+                x2, y2 = points[n - 1]
+                method = "backward"
+            else:
+                x0, y0 = points[i - 1]
+                x1, y1 = points[i]
+                x2, y2 = points[i + 1]
+                method = "central"
+
+            first, second = three_point_derivatives(x0, y0, x1, y1, x2, y2, method)
+            derivatives.append(
+                {
+                    "x": points[i][0],
+                    "y": points[i][1],
+                    "first_derivative": round(first, 10),
+                    "second_derivative": round(second, 10),
+                    "method": method,
+                }
+            )
+
+        return {
+            "mode": "table",
+            "points": [{"x": xi, "y": yi} for xi, yi in points],
+            "derivatives": derivatives,
+        }
     else:
         raise HTTPException(status_code=400, detail="Provide either function or (x_values, y_values)")
-    
+
     h = req.h
     x0 = req.x0
-    
+
+    if h is None or x0 is None:
+        raise HTTPException(status_code=400, detail="Provide x0 and h for function input")
+
     if req.method == "forward":
         # Forward difference: f'(x) ≈ [f(x+h) - f(x)] / h
         approx = (f(x0 + h) - f(x0)) / h
         formula = "f'(x) ≈ [f(x+h) - f(x)] / h"
         formula_latex = r"f'(x) \approx \frac{f(x+h) - f(x)}{h}"
         points_used = [{"x": x0, "y": f(x0)}, {"x": x0 + h, "y": f(x0 + h)}]
+        second_approx = (f(x0 + 2 * h) - 2 * f(x0 + h) + f(x0)) / (h * h)
+        second_formula = "f''(x) ≈ [f(x+2h) - 2f(x+h) + f(x)] / h^2"
+        second_formula_latex = r"f''(x) \approx \frac{f(x+2h) - 2f(x+h) + f(x)}{h^2}"
+        second_points_used = [
+            {"x": x0, "y": f(x0)},
+            {"x": x0 + h, "y": f(x0 + h)},
+            {"x": x0 + 2 * h, "y": f(x0 + 2 * h)},
+        ]
     elif req.method == "backward":
         # Backward difference: f'(x) ≈ [f(x) - f(x-h)] / h
         approx = (f(x0) - f(x0 - h)) / h
         formula = "f'(x) ≈ [f(x) - f(x-h)] / h"
         formula_latex = r"f'(x) \approx \frac{f(x) - f(x-h)}{h}"
         points_used = [{"x": x0 - h, "y": f(x0 - h)}, {"x": x0, "y": f(x0)}]
+        second_approx = (f(x0) - 2 * f(x0 - h) + f(x0 - 2 * h)) / (h * h)
+        second_formula = "f''(x) ≈ [f(x) - 2f(x-h) + f(x-2h)] / h^2"
+        second_formula_latex = r"f''(x) \approx \frac{f(x) - 2f(x-h) + f(x-2h)}{h^2}"
+        second_points_used = [
+            {"x": x0 - 2 * h, "y": f(x0 - 2 * h)},
+            {"x": x0 - h, "y": f(x0 - h)},
+            {"x": x0, "y": f(x0)},
+        ]
     else:  # central
         # Central difference: f'(x) ≈ [f(x+h) - f(x-h)] / (2h)
         approx = (f(x0 + h) - f(x0 - h)) / (2 * h)
         formula = "f'(x) ≈ [f(x+h) - f(x-h)] / (2h)"
         formula_latex = r"f'(x) \approx \frac{f(x+h) - f(x-h)}{2h}"
         points_used = [{"x": x0 - h, "y": f(x0 - h)}, {"x": x0 + h, "y": f(x0 + h)}]
+        second_approx = (f(x0 + h) - 2 * f(x0) + f(x0 - h)) / (h * h)
+        second_formula = "f''(x) ≈ [f(x+h) - 2f(x) + f(x-h)] / h^2"
+        second_formula_latex = r"f''(x) \approx \frac{f(x+h) - 2f(x) + f(x-h)}{h^2}"
+        second_points_used = [
+            {"x": x0 - h, "y": f(x0 - h)},
+            {"x": x0, "y": f(x0)},
+            {"x": x0 + h, "y": f(x0 + h)},
+        ]
     
     result = {
+        "mode": "function",
         "approximation": round(float(approx), 10),
+        "second_approximation": round(float(second_approx), 10),
         "method": req.method,
         "formula": formula,
         "formula_latex": formula_latex,
+        "second_formula": second_formula,
+        "second_formula_latex": second_formula_latex,
         "h": h,
         "x0": x0,
-        "points_used": points_used
+        "points_used": points_used,
+        "second_points_used": second_points_used,
     }
     
     if exact_derivative is not None:
         result["exact_derivative"] = round(exact_derivative, 10)
         result["error"] = round(abs(exact_derivative - approx), 10)
+        result["exact_second_derivative"] = round(exact_second_derivative, 10)
+        result["second_error"] = round(abs(exact_second_derivative - second_approx), 10)
         result["f_expr_latex"] = sp.latex(f_expr)
         result["df_expr_latex"] = sp.latex(df_expr)
+        result["d2f_expr_latex"] = sp.latex(d2f_expr)
     
     return result
 

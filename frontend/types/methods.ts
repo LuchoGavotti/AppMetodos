@@ -194,23 +194,39 @@ export interface DerivativeRequest {
   function?: string;
   x_values?: number[];
   y_values?: number[];
-  x0: number;
-  h: number;
-  method: "forward" | "backward" | "central";
+  x0?: number;
+  h?: number;
+  method?: "forward" | "backward" | "central";
 }
 
 export interface DerivativeResponse {
-  approximation: number;
-  method: string;
-  formula: string;
-  formula_latex: string;
-  h: number;
-  x0: number;
-  points_used: { x: number; y: number }[];
+  mode?: "function" | "table";
+  approximation?: number;
+  second_approximation?: number;
+  method?: string;
+  formula?: string;
+  formula_latex?: string;
+  second_formula?: string;
+  second_formula_latex?: string;
+  h?: number;
+  x0?: number;
+  points_used?: { x: number; y: number }[];
+  second_points_used?: { x: number; y: number }[];
   exact_derivative?: number;
   error?: number;
+  exact_second_derivative?: number;
+  second_error?: number;
   f_expr_latex?: string;
   df_expr_latex?: string;
+  d2f_expr_latex?: string;
+  points?: { x: number; y: number }[];
+  derivatives?: {
+    x: number;
+    y: number;
+    first_derivative: number;
+    second_derivative: number;
+    method: string;
+  }[];
 }
 
 export interface IntegrationRequest {
