@@ -45,7 +45,7 @@ const DERIVATIVE_FORMULAS = [
   {
     label: "Derivadas básicas",
     latex:
-      "\\begin{array}{l}\n\\frac{d}{dx}(e^x)=e^x \\\\\n\\frac{d}{dx}(\\ln x)=\\frac{1}{x} \\\\\n\\frac{d}{dx}(\\sin x)=\\cos x \\\\\n\\frac{d}{dx}(\\cos x)=-\\sin x\n\\end{array}",
+      "\\begin{array}{l}\n\\frac{d}{dx}(e^x)=e^x \\\\\n\\frac{d}{dx}(\\ln x)=\\frac{1}{x} \\\\\n\\frac{d}{dx}(x^x)=x^x(1 + ln(x)) \\\\\n\\frac{d}{dx}(\\sin x)=\\cos x \\\\\n\\frac{d}{dx}(\\cos x)=-\\sin x\n\\end{array}",
     description:
       "Incluye derivadas fundamentales que se usan frecuentemente.",
   },
