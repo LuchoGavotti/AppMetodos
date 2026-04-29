@@ -309,7 +309,9 @@ export interface AnalyticalSolverRequest {
   function?: string;
   variable?: "x" | "y" | "z";
   derivative_order?: number;
+  evaluation_point?: number;
   integral_dimension?: 1 | 2 | 3;
+  integral_definite?: boolean;
   bounds?: [number, number][];
   equation?: string;
   x0?: number;
@@ -333,6 +335,9 @@ export interface AnalyticalSolverResponse {
     hint?: string | null;
     solved_with_ics?: boolean | null;
     satisfies_initial_condition?: boolean | null;
+    evaluation_point?: number | null;
+    evaluation_value?: number | null;
+    evaluation_latex?: string | null;
   } | null;
 }
 
@@ -379,6 +384,7 @@ export interface DifferentialEquationAnalyticSolution {
   satisfies_initial_condition?: boolean | null;
   solution_latex: string;
   solution_expr_latex: string;
+  solution_expr_plot?: string | null;
   steps: DifferentialEquationAnalyticStep[];
 }
 

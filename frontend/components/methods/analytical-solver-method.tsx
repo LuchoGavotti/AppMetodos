@@ -35,6 +35,11 @@ const THEORY_FORMULAS = [
     description: "Las integrales dobles y triples se resuelven como integraciones sucesivas, una variable por vez.",
   },
   {
+    label: "Integral Indefinida",
+    latex: "\\int f(x)\\,dx = F(x)+C",
+    description: "En la integral indefinida se busca una primitiva y siempre se agrega la constante de integracion C.",
+  },
+  {
     label: "EDO Analitica",
     latex: "\\frac{dy}{dx} = f(x,y)",
     description: "Si SymPy encuentra una solucion cerrada, se muestra el desarrollo y la solucion final paso a paso.",
@@ -49,6 +54,7 @@ type NumericFieldId =
   | "yMax"
   | "zMin"
   | "zMax"
+  | "evaluationPoint"
   | "x0"
   | "y0";
 
@@ -83,7 +89,9 @@ export function AnalyticalSolverMethod() {
   const [functionExpr, setFunctionExpr] = React.useState("sin(x)^2");
   const [variable, setVariable] = React.useState<"x" | "y" | "z">("x");
   const [derivativeOrder, setDerivativeOrder] = React.useState("1");
+  const [evaluationPoint, setEvaluationPoint] = React.useState("");
   const [integralDimension, setIntegralDimension] = React.useState<1 | 2 | 3>(1);
+  const [integralDefinite, setIntegralDefinite] = React.useState(true);
   const [equation, setEquation] = React.useState("x + y");
   const [x0, setX0] = React.useState("");
   const [y0, setY0] = React.useState("");
@@ -110,6 +118,7 @@ export function AnalyticalSolverMethod() {
     else if (activeNumericField === "yMax") setYMax(updater);
     else if (activeNumericField === "zMin") setZMin(updater);
     else if (activeNumericField === "zMax") setZMax(updater);
+    else if (activeNumericField === "evaluationPoint") setEvaluationPoint(updater);
     else if (activeNumericField === "x0") setX0(updater);
     else setY0(updater);
   }, [activeNumericField]);
@@ -142,19 +151,26 @@ export function AnalyticalSolverMethod() {
         if (!Number.isInteger(parsedOrder) || parsedOrder <= 0) {
           throw new Error("El orden de la derivada debe ser un entero positivo.");
         }
+        const parsedEvaluationPoint =
+          evaluationPoint.trim() === ""
+            ? undefined
+            : parseNumericExpression(evaluationPoint, "Punto de evaluacion");
 
         response = await api.analyticalSolver({
           problem_type: "derivative",
           function: functionExpr,
           variable,
           derivative_order: parsedOrder,
+          evaluation_point: parsedEvaluationPoint,
         });
       } else if (problemType === "integral") {
         response = await api.analyticalSolver({
           problem_type: "integral",
           function: functionExpr,
-          integral_dimension: integralDimension,
-          bounds: buildBounds(),
+          variable,
+          integral_definite: integralDefinite,
+          integral_dimension: integralDefinite ? integralDimension : 1,
+          bounds: integralDefinite ? buildBounds() : undefined,
         });
       } else {
         const parsedX0 = x0.trim() === "" ? undefined : parseNumericExpression(x0, "x0");
@@ -274,42 +290,91 @@ export function AnalyticalSolverMethod() {
           )}
 
           {problemType === "derivative" && (
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-2">
-                <Label>Variable</Label>
-                <Select value={variable} onValueChange={(value) => setVariable(value as "x" | "y" | "z")}>
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="x">x</SelectItem>
-                    <SelectItem value="y">y</SelectItem>
-                    <SelectItem value="z">z</SelectItem>
-                  </SelectContent>
-                </Select>
+            <>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-2">
+                  <Label>Variable</Label>
+                  <Select value={variable} onValueChange={(value) => setVariable(value as "x" | "y" | "z")}>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="x">x</SelectItem>
+                      <SelectItem value="y">y</SelectItem>
+                      <SelectItem value="z">z</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="analytic-order">Orden</Label>
+                  <Input
+                    id="analytic-order"
+                    type="number"
+                    min={1}
+                    step={1}
+                    value={derivativeOrder}
+                    onChange={(e) => setDerivativeOrder(e.target.value)}
+                  />
+                </div>
               </div>
               <div className="space-y-2">
-                <Label htmlFor="analytic-order">Orden</Label>
+                <Label htmlFor="analytic-evaluation-point">Punto de evaluacion (opcional)</Label>
                 <Input
-                  id="analytic-order"
-                  type="number"
-                  min={1}
-                  step={1}
-                  value={derivativeOrder}
-                  onChange={(e) => setDerivativeOrder(e.target.value)}
+                  id="analytic-evaluation-point"
+                  type="text"
+                  value={evaluationPoint}
+                  onChange={(e) => setEvaluationPoint(e.target.value)}
+                  onFocus={() => setActiveNumericField("evaluationPoint")}
+                  placeholder="ej.: 1, pi/2, 0.5"
                 />
+                <p className="text-xs text-muted-foreground">
+                  Si lo completas, ademas de la derivada simbolica se calcula la derivada en ese punto.
+                </p>
               </div>
-            </div>
+            </>
           )}
 
           {problemType === "integral" && (
             <>
               <div className="space-y-2">
-                <Label>Dimension de la integral</Label>
+                <Label>Tipo de integral</Label>
                 <Select
-                  value={String(integralDimension)}
-                  onValueChange={(value) => setIntegralDimension(Number(value) as 1 | 2 | 3)}
+                  value={integralDefinite ? "definida" : "indefinida"}
+                  onValueChange={(value) => setIntegralDefinite(value === "definida")}
                 >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="definida">Definida</SelectItem>
+                    <SelectItem value="indefinida">Indefinida</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {!integralDefinite && (
+                <div className="space-y-2">
+                  <Label>Variable de integracion</Label>
+                  <Select value={variable} onValueChange={(value) => setVariable(value as "x" | "y" | "z")}>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="x">x</SelectItem>
+                      <SelectItem value="y">y</SelectItem>
+                      <SelectItem value="z">z</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+
+              {integralDefinite && (
+                <div className="space-y-2">
+                  <Label>Dimension de la integral</Label>
+                  <Select
+                    value={String(integralDimension)}
+                    onValueChange={(value) => setIntegralDimension(Number(value) as 1 | 2 | 3)}
+                  >
                   <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>
@@ -318,37 +383,41 @@ export function AnalyticalSolverMethod() {
                     <SelectItem value="2">Doble</SelectItem>
                     <SelectItem value="3">Triple</SelectItem>
                   </SelectContent>
-                </Select>
-              </div>
-
-              <div className="space-y-2">
-                <Label>Cotas de integracion</Label>
-                <div className="space-y-2">
-                  <p className="text-xs text-muted-foreground">Variable x: desde x minimo hasta x maximo</p>
-                  <div className="grid grid-cols-2 gap-2">
-                    <Input value={xMin} onChange={(e) => setXMin(e.target.value)} onFocus={() => setActiveNumericField("xMin")} placeholder="x minimo" />
-                    <Input value={xMax} onChange={(e) => setXMax(e.target.value)} onFocus={() => setActiveNumericField("xMax")} placeholder="x maximo" />
-                  </div>
+                  </Select>
                 </div>
-                {integralDimension >= 2 && (
+              )}
+
+              {integralDefinite && (
+                <div className="space-y-2">
+                  <Label>Cotas de integracion</Label>
                   <div className="space-y-2">
-                    <p className="text-xs text-muted-foreground">Variable y: desde y minimo hasta y maximo</p>
+                    <p className="text-xs text-muted-foreground">Variable x: desde x minimo hasta x maximo</p>
                     <div className="grid grid-cols-2 gap-2">
-                      <Input value={yMin} onChange={(e) => setYMin(e.target.value)} onFocus={() => setActiveNumericField("yMin")} placeholder="y minimo" />
-                      <Input value={yMax} onChange={(e) => setYMax(e.target.value)} onFocus={() => setActiveNumericField("yMax")} placeholder="y maximo" />
+                      <Input value={xMin} onChange={(e) => setXMin(e.target.value)} onFocus={() => setActiveNumericField("xMin")} placeholder="x minimo" />
+                      <Input value={xMax} onChange={(e) => setXMax(e.target.value)} onFocus={() => setActiveNumericField("xMax")} placeholder="x maximo" />
                     </div>
                   </div>
-                )}
-                {integralDimension >= 3 && (
-                  <div className="space-y-2">
-                    <p className="text-xs text-muted-foreground">Variable z: desde z minimo hasta z maximo</p>
-                    <div className="grid grid-cols-2 gap-2">
-                      <Input value={zMin} onChange={(e) => setZMin(e.target.value)} onFocus={() => setActiveNumericField("zMin")} placeholder="z minimo" />
-                      <Input value={zMax} onChange={(e) => setZMax(e.target.value)} onFocus={() => setActiveNumericField("zMax")} placeholder="z maximo" />
+
+                  {integralDimension >= 2 && (
+                    <div className="space-y-2">
+                      <p className="text-xs text-muted-foreground">Variable y: desde y minimo hasta y maximo</p>
+                      <div className="grid grid-cols-2 gap-2">
+                        <Input value={yMin} onChange={(e) => setYMin(e.target.value)} onFocus={() => setActiveNumericField("yMin")} placeholder="y minimo" />
+                        <Input value={yMax} onChange={(e) => setYMax(e.target.value)} onFocus={() => setActiveNumericField("yMax")} placeholder="y maximo" />
+                      </div>
                     </div>
-                  </div>
-                )}
-              </div>
+                  )}
+                  {integralDimension >= 3 && (
+                    <div className="space-y-2">
+                      <p className="text-xs text-muted-foreground">Variable z: desde z minimo hasta z maximo</p>
+                      <div className="grid grid-cols-2 gap-2">
+                        <Input value={zMin} onChange={(e) => setZMin(e.target.value)} onFocus={() => setActiveNumericField("zMin")} placeholder="z minimo" />
+                        <Input value={zMax} onChange={(e) => setZMax(e.target.value)} onFocus={() => setActiveNumericField("zMax")} placeholder="z maximo" />
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
             </>
           )}
 
@@ -384,7 +453,7 @@ export function AnalyticalSolverMethod() {
             </>
           )}
 
-          {(problemType === "integral" || problemType === "differential-equation") && (
+          {(problemType === "derivative" || problemType === "integral" || problemType === "differential-equation") && (
             <div className="space-y-2">
               <Label>Constantes rapidas (campo activo)</Label>
               <div className="flex gap-2">
@@ -465,6 +534,22 @@ export function AnalyticalSolverMethod() {
                   <strong>Verificacion de condicion inicial:</strong> {result.metadata.satisfies_initial_condition ? "Cumple" : "No se pudo verificar"}
                 </p>
               )}
+
+              {result.metadata?.evaluation_point !== undefined &&
+                result.metadata.evaluation_point !== null &&
+                result.metadata.evaluation_value !== undefined &&
+                result.metadata.evaluation_value !== null && (
+                  <div className="space-y-1">
+                    <p className="text-sm">
+                      <strong>Derivada evaluada en {result.metadata.evaluation_point}:</strong>{" "}
+                      {result.metadata.evaluation_value}
+                    </p>
+                    <p className="text-sm">
+                      <strong>Valor numerico copiable:</strong>{" "}
+                      <code>{result.metadata.evaluation_value}</code>
+                    </p>
+                  </div>
+                )}
 
               <section className="space-y-3">
                 <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">

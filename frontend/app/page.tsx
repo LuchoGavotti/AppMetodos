@@ -3,6 +3,7 @@
 import * as React from "react";
 import { Header } from "@/components/layout/header";
 import { MethodNav, type MethodId } from "@/components/layout/method-nav";
+import { FormulaCheatSheet } from "@/components/layout/formula-cheat-sheet";
 import { BisectionMethod } from "@/components/methods/bisection-method";
 import { FixedPointMethod } from "@/components/methods/fixed-point-method";
 import { AitkenMethod } from "@/components/methods/aitken-method";
@@ -21,7 +22,14 @@ export default function HomePage() {
     <div className="min-h-screen bg-background">
       <Header />
       <main className="container mx-auto px-4 py-4 space-y-4">
-        <MethodNav activeMethod={activeMethod} onMethodChange={setActiveMethod} />
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="min-w-0 flex-1">
+            <MethodNav activeMethod={activeMethod} onMethodChange={setActiveMethod} />
+          </div>
+          <div className="flex justify-end">
+            <FormulaCheatSheet />
+          </div>
+        </div>
         {activeMethod === "bisection" && <BisectionMethod />}
         {activeMethod === "fixed-point" && <FixedPointMethod />}
         {activeMethod === "aitken" && <AitkenMethod />}

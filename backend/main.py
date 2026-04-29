@@ -98,7 +98,9 @@ class AnalyticalSolverRequest(BaseModel):
     function: Optional[str] = Field(default=None, description="Function for derivative/integral problems")
     variable: Optional[Literal["x", "y", "z"]] = Field(default="x")
     derivative_order: Optional[int] = Field(default=1, ge=1)
+    evaluation_point: Optional[float] = Field(default=None)
     integral_dimension: Optional[Literal[1, 2, 3]] = Field(default=1)
+    integral_definite: Optional[bool] = Field(default=True)
     bounds: Optional[list[list[float]]] = Field(default=None, description="Bounds per dimension")
     equation: Optional[str] = Field(default=None, description="ODE right-hand side y' = f(x,y)")
     x0: Optional[float] = Field(default=None)
@@ -279,6 +281,51 @@ def try_symbolic_ode_solution(expr, x_sym, y_sym, x0: float, y0: float):
     }
 
 
+def classify_ode_strategy(expr: sp.Expr, x_sym: sp.Symbol, y_sym: sp.Symbol, hint: Optional[str]):
+    hint_lower = (hint or "").lower()
+
+    if "separable" in hint_lower:
+        separated = None
+        try:
+            separated = sp.separatevars(expr, symbols=[x_sym, y_sym], dict=True)
+        except Exception:
+            separated = None
+
+        x_part = separated.get(x_sym) if isinstance(separated, dict) else None
+        y_part = separated.get(y_sym) if isinstance(separated, dict) else None
+        return {
+            "classification": "separable",
+            "strategy_label": "Variables separables",
+            "x_part": x_part,
+            "y_part": y_part,
+        }
+
+    is_linear = False
+    a_expr = None
+    b_expr = None
+    try:
+        second_y = sp.diff(expr, y_sym, 2)
+        is_linear = sp.simplify(second_y) == 0
+        if is_linear:
+            a_expr = sp.simplify(sp.diff(expr, y_sym))
+            b_expr = sp.simplify(expr - a_expr * y_sym)
+    except Exception:
+        is_linear = False
+
+    if "linear" in hint_lower or is_linear:
+        return {
+            "classification": "linear",
+            "strategy_label": "Ecuacion lineal de primer orden",
+            "a_expr": a_expr,
+            "b_expr": b_expr,
+        }
+
+    return {
+        "classification": "other",
+        "strategy_label": "Resolucion simbolica automatica",
+    }
+
+
 def try_symbolic_ode_solution_optional(expr, x_sym, y_sym, x0: Optional[float], y0: Optional[float]):
     """Try obtaining an analytical ODE solution with optional initial conditions."""
     y_func = sp.Function("y")
@@ -329,12 +376,140 @@ def try_symbolic_ode_solution_optional(expr, x_sym, y_sym, x0: Optional[float], 
         except Exception:
             satisfies_initial_condition = None
 
+    strategy = classify_ode_strategy(expr, x_sym, y_sym, preferred_hint)
+
+    steps = [
+        {
+            "title": "1) Planteo del problema",
+            "description": "Se escribe la ecuacion diferencial en la forma y' = f(x,y).",
+            "latex": rf"\frac{{dy}}{{dx}} = {sp.latex(expr)}",
+        },
+        {
+            "title": "2) Clasificacion de la ecuacion",
+            "description": f"Se identifica la estructura principal de la EDO: {strategy['strategy_label']}.",
+            "latex": None,
+        },
+    ]
+
+    if strategy["classification"] == "separable":
+        x_part = strategy.get("x_part")
+        y_part = strategy.get("y_part")
+        if x_part is not None and y_part is not None:
+            steps.append(
+                {
+                    "title": "3) Separacion de variables",
+                    "description": "Se reordena la ecuacion para dejar todas las y de un lado y todas las x del otro.",
+                    "latex": rf"\frac{{dy}}{{{sp.latex(y_part)}}} = {sp.latex(x_part)}\,dx",
+                }
+            )
+            steps.append(
+                {
+                    "title": "4) Integracion de ambos lados",
+                    "description": "Se integra miembro a miembro para obtener la relacion general entre x e y.",
+                    "latex": rf"\int \frac{{1}}{{{sp.latex(y_part)}}}\,dy = \int {sp.latex(x_part)}\,dx",
+                }
+            )
+        else:
+            steps.append(
+                {
+                    "title": "3) Separacion de variables",
+                    "description": "La ecuacion fue reconocida como separable y se procede a separar las variables antes de integrar.",
+                    "latex": None,
+                }
+            )
+    elif strategy["classification"] == "linear":
+        a_expr = strategy.get("a_expr")
+        b_expr = strategy.get("b_expr")
+        if a_expr is not None and b_expr is not None:
+            p_expr = sp.simplify(-a_expr)
+            q_expr = sp.simplify(b_expr)
+            steps.append(
+                {
+                    "title": "3) Forma lineal estandar",
+                    "description": "Se reordena la ecuacion hasta que quede en la forma y' + P(x)y = Q(x).",
+                    "latex": rf"\frac{{dy}}{{dx}} + \left({sp.latex(p_expr)}\right)y = {sp.latex(q_expr)}",
+                }
+            )
+            steps.append(
+                {
+                    "title": "4) Identificacion de P(x)",
+                    "description": "Se toma como P(x) el coeficiente que acompana a y en la forma lineal estandar.",
+                    "latex": rf"P(x) = {sp.latex(p_expr)}",
+                }
+            )
+            steps.append(
+                {
+                    "title": "5) Identificacion de Q(x)",
+                    "description": "Se toma como Q(x) el termino independiente del lado derecho.",
+                    "latex": rf"Q(x) = {sp.latex(q_expr)}",
+                }
+            )
+            steps.append(
+                {
+                    "title": "6) Planteo del factor integrante",
+                    "description": "Se plantea u(x) como e elevado a la integral de P(x).",
+                    "latex": rf"u(x) = e^{{\int {sp.latex(p_expr)}\,dx}}",
+                }
+            )
+            steps.append(
+                {
+                    "title": "7) Formula de la solucion lineal",
+                    "description": "Con u(x) ya planteada, se escribe la formula general de y(x) para una EDO lineal de primer orden.",
+                    "latex": rf"y(x)=\frac{{1}}{{u(x)}}\left(\int u(x){sp.latex(q_expr)}\,dx + C\right)",
+                }
+            )
+        else:
+            steps.append(
+                {
+                    "title": "3) Forma lineal estandar",
+                    "description": "La ecuacion fue reconocida como lineal de primer orden y se resuelve con factor integrante.",
+                    "latex": None,
+                }
+            )
+    else:
+        steps.append(
+            {
+                "title": "3) Estrategia automatica",
+                "description": "No se detecto una forma elemental simple como separable o lineal, asi que se usa resolucion simbolica automatica.",
+                "latex": None,
+            }
+        )
+
+    steps.append(
+        {
+            "title": f"{len(steps)+1}) Resolucion simbolica",
+            "description": "Se obtiene la solucion general o particular de la EDO.",
+            "latex": sp.latex(solution_eq),
+        }
+    )
+
+    if has_ics:
+        steps.append(
+            {
+                "title": f"{len(steps)+1}) Aplicacion de la condicion inicial",
+                "description": "Se usa el dato inicial para fijar la constante de integracion.",
+                "latex": rf"y({sp.latex(sp.nsimplify(x0))}) = {sp.latex(sp.nsimplify(y0))}",
+            }
+        )
+
+    steps.append(
+        {
+            "title": f"{len(steps)+1}) Solucion final",
+            "description": "Se deja la funcion y(x) en forma explicita cuando es posible.",
+            "latex": rf"y(x) = {sp.latex(solution_rhs)}",
+        }
+    )
+
     return {
+        "classification": strategy["classification"],
+        "strategy_label": strategy["strategy_label"],
         "hint": preferred_hint,
         "solved_with_ics": solved_with_ics,
         "satisfies_initial_condition": satisfies_initial_condition,
         "solution_eq": solution_eq,
         "solution_rhs": solution_rhs,
+        "solution_expr_plot": None if solution_rhs.has(sp.Integral) or solution_rhs.has(sp.Function("y")(x_sym)) else sp.sstr(solution_rhs).replace("**", "^"),
+        "steps": steps,
     }
 
 
@@ -376,6 +551,34 @@ def build_derivative_steps(expr: sp.Expr, variable: sp.Symbol, order: int):
     return steps, simplified
 
 
+def evaluate_symbolic_expression_at_point(expr: sp.Expr, variable: sp.Symbol, point: float):
+    point_symbolic = sp.Float(point)
+    evaluated_numeric_expr = sp.N(expr.subs(variable, point_symbolic), 16)
+    numeric = float(evaluated_numeric_expr)
+    if np.isnan(numeric) or np.isinf(numeric):
+        raise ValueError("Evaluation returned NaN/Inf")
+    return point_symbolic, evaluated_numeric_expr, numeric
+
+
+def finite_boundary_limit(expr: sp.Expr, variable: sp.Symbol, bound: float, direction: str):
+    """Return a finite one-sided limit when direct substitution is invalid, else None."""
+    try:
+        direct = float(expr.subs(variable, bound).evalf())
+        if np.isfinite(direct):
+            return None
+    except Exception:
+        pass
+
+    try:
+        limit_expr = sp.limit(expr, variable, bound, dir=direction)
+        limit_value = float(limit_expr.evalf())
+        if np.isfinite(limit_value):
+            return sp.simplify(limit_expr)
+    except Exception:
+        return None
+    return None
+
+
 def build_integral_steps(expr: sp.Expr, variables: tuple[sp.Symbol, ...], bounds_array: np.ndarray):
     current = expr
     current_latex = sp.latex(expr)
@@ -394,11 +597,34 @@ def build_integral_steps(expr: sp.Expr, variables: tuple[sp.Symbol, ...], bounds
         integral_latex = rf"\int_{{{sp.latex(sp.nsimplify(low))}}}^{{{sp.latex(sp.nsimplify(high))}}} {integral_latex}\, d{sp.latex(sym)}"
     steps[0]["latex"] = integral_latex
 
+    exact_found = True
+    message = None
+
     for idx, sym in enumerate(variables):
         low, high = bounds_array[idx]
+        low_limit = finite_boundary_limit(current, sym, low, "+")
+        high_limit = finite_boundary_limit(current, sym, high, "-")
+
+        if low_limit is not None:
+            steps.append(
+                {
+                    "title": f"{len(steps)+1}) Limite en la cota inferior",
+                    "description": f"La expresion se indetermina en {sym}={low}, asi que se toma el limite lateral derecho para extenderla en esa cota.",
+                    "latex": rf"\lim_{{{sp.latex(sym)} \to {sp.latex(sp.nsimplify(low))}^{'+'}}} {sp.latex(current)} = {sp.latex(low_limit)}",
+                }
+            )
+
+        if high_limit is not None:
+            steps.append(
+                {
+                    "title": f"{len(steps)+1}) Limite en la cota superior",
+                    "description": f"La expresion se indetermina en {sym}={high}, asi que se toma el limite lateral izquierdo para extenderla en esa cota.",
+                    "latex": rf"\lim_{{{sp.latex(sym)} \to {sp.latex(sp.nsimplify(high))}^{{-}}}} {sp.latex(current)} = {sp.latex(high_limit)}",
+                }
+            )
+
         antiderivative = sp.integrate(current, sym)
         antiderivative = sp.simplify(antiderivative)
-        evaluated = sp.simplify(antiderivative.subs(sym, high) - antiderivative.subs(sym, low))
 
         steps.append(
             {
@@ -407,13 +633,39 @@ def build_integral_steps(expr: sp.Expr, variables: tuple[sp.Symbol, ...], bounds
                 "latex": rf"\int {current_latex}\, d{sp.latex(sym)} = {sp.latex(antiderivative)}",
             }
         )
-        steps.append(
-            {
-                "title": f"{len(steps)+1}) Evaluacion en cotas de {sym}",
-                "description": f"Se reemplaza {sym} por la cota superior y luego por la inferior para obtener la contribucion definida.",
-                "latex": rf"\left[{sp.latex(antiderivative)}\right]_{{{sp.latex(sp.nsimplify(low))}}}^{{{sp.latex(sp.nsimplify(high))}}} = {sp.latex(evaluated)}",
-            }
-        )
+
+        if isinstance(antiderivative, sp.Integral):
+            definite_direct = sp.integrate(current, (sym, low, high))
+            if isinstance(definite_direct, sp.Integral):
+                exact_found = False
+                approx_value = sp.N(definite_direct, 16)
+                evaluated = sp.N(approx_value, 14)
+                steps.append(
+                    {
+                        "title": f"{len(steps)+1}) Evaluacion de la integral definida",
+                        "description": "No se encontro una primitiva cerrada simple. Se mantiene la integral definida y se obtiene una aproximacion numerica respetando las cotas y los limites necesarios.",
+                        "latex": rf"\int_{{{sp.latex(sp.nsimplify(low))}}}^{{{sp.latex(sp.nsimplify(high))}}} {sp.latex(current)}\, d{sp.latex(sym)} \approx {sp.latex(evaluated)}",
+                    }
+                )
+                message = "Se aplicaron limites en las cotas necesarias, pero no se encontro una forma cerrada exacta de la integral; se muestra una aproximacion numerica."
+            else:
+                evaluated = sp.simplify(definite_direct)
+                steps.append(
+                    {
+                        "title": f"{len(steps)+1}) Evaluacion de la integral definida",
+                        "description": "Como la primitiva no aparecio en forma simple, se evaluo directamente la integral definida con sus cotas.",
+                        "latex": rf"\int_{{{sp.latex(sp.nsimplify(low))}}}^{{{sp.latex(sp.nsimplify(high))}}} {sp.latex(current)}\, d{sp.latex(sym)} = {sp.latex(evaluated)}",
+                    }
+                )
+        else:
+            evaluated = sp.simplify(antiderivative.subs(sym, high) - antiderivative.subs(sym, low))
+            steps.append(
+                {
+                    "title": f"{len(steps)+1}) Evaluacion en cotas de {sym}",
+                    "description": f"Se reemplaza {sym} por la cota superior y luego por la inferior para obtener la contribucion definida.",
+                    "latex": rf"\left[{sp.latex(antiderivative)}\right]_{{{sp.latex(sp.nsimplify(low))}}}^{{{sp.latex(sp.nsimplify(high))}}} = {sp.latex(evaluated)}",
+                }
+            )
 
         current = evaluated
         current_latex = sp.latex(current)
@@ -426,6 +678,35 @@ def build_integral_steps(expr: sp.Expr, variables: tuple[sp.Symbol, ...], bounds
             "latex": sp.latex(result),
         }
     )
+
+    if not exact_found:
+        steps[-1]["description"] = "Despues de aplicar los limites necesarios y evaluar las cotas, se obtiene una aproximacion numerica de la integral."
+
+    return steps, result, exact_found, message
+
+
+def build_indefinite_integral_steps(expr: sp.Expr, variable: sp.Symbol):
+    antiderivative = sp.integrate(expr, variable)
+    antiderivative = sp.simplify(antiderivative)
+    result = sp.Add(antiderivative, sp.Symbol("C"), evaluate=False)
+
+    steps = [
+        {
+            "title": "1) Planteo de la integral",
+            "description": "Se escribe la integral indefinida respecto de la variable elegida.",
+            "latex": rf"\int {sp.latex(expr)}\, d{sp.latex(variable)}",
+        },
+        {
+            "title": "2) Integracion respecto de la variable",
+            "description": "Se calcula una primitiva de la funcion respecto de esa variable.",
+            "latex": rf"\int {sp.latex(expr)}\, d{sp.latex(variable)} = {sp.latex(antiderivative)} + C",
+        },
+        {
+            "title": "3) Resultado final",
+            "description": "Se agrega la constante de integracion para expresar la familia de primitivas.",
+            "latex": sp.latex(result),
+        },
+    ]
 
     return steps, result
 
@@ -517,6 +798,27 @@ def safe_abs_expr_eval_on_interval(expr: sp.Expr, x_sym: sp.Symbol, x_val: float
             raise
 
 
+def safe_expr_eval_with_endpoint_limits(expr: sp.Expr, x_sym: sp.Symbol, x_val: float, a: float, b: float) -> float:
+    """Evaluate expr(x) at a specific point, using endpoint one-sided limits when needed."""
+    try:
+        value = float(expr.subs(x_sym, x_val).evalf())
+        if np.isnan(value) or np.isinf(value):
+            raise ValueError("Expression evaluation returned NaN/Inf")
+        return value
+    except Exception:
+        if np.isclose(x_val, a):
+            limit_expr = sp.limit(expr, x_sym, a, dir="+")
+        elif np.isclose(x_val, b):
+            limit_expr = sp.limit(expr, x_sym, b, dir="-")
+        else:
+            raise
+
+        limit_value = float(limit_expr.evalf())
+        if np.isnan(limit_value) or np.isinf(limit_value):
+            raise ValueError("Expression limit returned NaN/Inf")
+        return limit_value
+
+
 def derivative_bound_on_interval(
     derivative_expr: sp.Expr,
     critical_expr: Optional[sp.Expr],
@@ -525,26 +827,39 @@ def derivative_bound_on_interval(
     b: float,
     n: int,
 ) -> float:
-    """Estimate a reliable max |derivative_expr| over [a,b] using critical points, endpoints, and a probe grid."""
+    """Estimate a reliable max |derivative_expr| over [a,b] using endpoints and a dense probe grid.
+
+    We intentionally avoid symbolic solving of critical points here because for
+    expressions with logs/trig removable singularities (like the ones handled
+    with limits at the endpoints) SymPy's solve step can become the main source
+    of hangs in the numerical-method endpoint.
+    """
     probe_points = np.linspace(a, b, min(400, max(120, n * 8)))
     evaluation_points = {float(a), float(b)}
     evaluation_points.update(float(xi) for xi in probe_points)
-
-    if critical_expr is not None:
-        try:
-            critical_points = sp.solve(critical_expr, x_sym)
-            for p in critical_points:
-                if p.is_real:
-                    p_float = float(p.evalf())
-                    if a <= p_float <= b:
-                        evaluation_points.add(p_float)
-        except Exception:
-            pass
 
     return max(
         safe_abs_expr_eval_on_interval(derivative_expr, x_sym, xi, a, b)
         for xi in evaluation_points
     )
+
+
+def should_attempt_symbolic_exact_integral_1d(expr: sp.Expr) -> bool:
+    """Heuristic guard to avoid freezing the numerical integration endpoint.
+
+    The exact integral shown in this method is auxiliary information; the
+    numerical method itself should still finish quickly even when SymPy would
+    take a very long time trying to integrate symbolically.
+    """
+    ops = int(sp.count_ops(expr))
+    has_log = expr.has(sp.log)
+    has_trig = any(expr.has(fn) for fn in (sp.sin, sp.cos, sp.tan, sp.asin, sp.acos, sp.atan))
+
+    if ops > 25:
+        return False
+    if has_log and has_trig:
+        return False
+    return True
 
 
 def make_rng(seed: Optional[int]) -> np.random.Generator:
@@ -1568,11 +1883,28 @@ async def numerical_integration(req: IntegrationRequest):
             })
     
     truncation_error = None
+    truncation_derivative_order = None
+    truncation_derivative_latex = None
+    truncation_derivative_bound = None
+    truncation_point_used = None
+    truncation_derivative_value_at_point = None
     if req.function:
         try:
             if req.method in ["left_rectangle", "right_rectangle", "midpoint"]:
                 second_derivative = sp.diff(f_expr, x, 2)
-                m2 = derivative_bound_on_interval(second_derivative, None, x, a, b, n)
+                truncation_derivative_order = 2
+                truncation_derivative_latex = sp.latex(second_derivative)
+                if req.truncation_point is not None:
+                    if not (a <= req.truncation_point <= b):
+                        raise HTTPException(status_code=400, detail="El punto z/xi debe pertenecer al intervalo [a, b]")
+                    truncation_point_used = float(req.truncation_point)
+                    truncation_derivative_value_at_point = abs(
+                        safe_expr_eval_with_endpoint_limits(second_derivative, x, truncation_point_used, a, b)
+                    )
+                    m2 = truncation_derivative_value_at_point
+                else:
+                    m2 = derivative_bound_on_interval(second_derivative, None, x, a, b, n)
+                    truncation_derivative_bound = m2
                 if req.method == "midpoint":
                     truncation_error = ((b - a) * (h ** 2) * m2) / 24.0
                 else:
@@ -1580,32 +1912,76 @@ async def numerical_integration(req: IntegrationRequest):
             elif req.method == "trapezoidal":
                 second_derivative = sp.diff(f_expr, x, 2)
                 third_derivative = sp.diff(f_expr, x, 3)
-                m2 = derivative_bound_on_interval(second_derivative, third_derivative, x, a, b, n)
+                truncation_derivative_order = 2
+                truncation_derivative_latex = sp.latex(second_derivative)
+                if req.truncation_point is not None:
+                    if not (a <= req.truncation_point <= b):
+                        raise HTTPException(status_code=400, detail="El punto z/xi debe pertenecer al intervalo [a, b]")
+                    truncation_point_used = float(req.truncation_point)
+                    truncation_derivative_value_at_point = abs(
+                        safe_expr_eval_with_endpoint_limits(second_derivative, x, truncation_point_used, a, b)
+                    )
+                    m2 = truncation_derivative_value_at_point
+                else:
+                    m2 = derivative_bound_on_interval(second_derivative, third_derivative, x, a, b, n)
+                    truncation_derivative_bound = m2
 
                 truncation_error = (b - a) ** 3 / (12 * n ** 2) * m2
     
             elif req.method == "simpson_1_3":
                 fourth_derivative = sp.diff(f_expr, x, 4)
                 fifth_derivative = sp.diff(f_expr, x, 5)
-                m4 = derivative_bound_on_interval(fourth_derivative, fifth_derivative, x, a, b, n)
+                truncation_derivative_order = 4
+                truncation_derivative_latex = sp.latex(fourth_derivative)
+                if req.truncation_point is not None:
+                    if not (a <= req.truncation_point <= b):
+                        raise HTTPException(status_code=400, detail="El punto z/xi debe pertenecer al intervalo [a, b]")
+                    truncation_point_used = float(req.truncation_point)
+                    truncation_derivative_value_at_point = abs(
+                        safe_expr_eval_with_endpoint_limits(fourth_derivative, x, truncation_point_used, a, b)
+                    )
+                    m4 = truncation_derivative_value_at_point
+                else:
+                    m4 = derivative_bound_on_interval(fourth_derivative, fifth_derivative, x, a, b, n)
+                    truncation_derivative_bound = m4
                 truncation_error = (b - a) ** 5 / (180 * n ** 4) * m4
             elif req.method == "simpson_3_8":
                 fourth_derivative = sp.diff(f_expr, x, 4)
                 fifth_derivative = sp.diff(f_expr, x, 5)
-                m4 = derivative_bound_on_interval(fourth_derivative, fifth_derivative, x, a, b, n)
+                truncation_derivative_order = 4
+                truncation_derivative_latex = sp.latex(fourth_derivative)
+                if req.truncation_point is not None:
+                    if not (a <= req.truncation_point <= b):
+                        raise HTTPException(status_code=400, detail="El punto z/xi debe pertenecer al intervalo [a, b]")
+                    truncation_point_used = float(req.truncation_point)
+                    truncation_derivative_value_at_point = abs(
+                        safe_expr_eval_with_endpoint_limits(fourth_derivative, x, truncation_point_used, a, b)
+                    )
+                    m4 = truncation_derivative_value_at_point
+                else:
+                    m4 = derivative_bound_on_interval(fourth_derivative, fifth_derivative, x, a, b, n)
+                    truncation_derivative_bound = m4
                 truncation_error = (b - a) ** 5 / (6480 * n ** 4) * m4
+        except HTTPException:
+            raise
         except Exception:
             truncation_error = None
+            truncation_derivative_order = None
+            truncation_derivative_latex = None
+            truncation_derivative_bound = None
+            truncation_point_used = None
+            truncation_derivative_value_at_point = None
 
-    # Calculate exact integral if possible
+    # Calculate exact integral if it looks cheap enough. This should never
+    # block the main numerical method from returning.
     try:
-        if req.function:
+        if req.function and should_attempt_symbolic_exact_integral_1d(f_expr):
             exact_integral = float(sp.integrate(f_expr, (x, a, b)).evalf())
             error = abs(exact_integral - result)
         else:
             exact_integral = None
             error = None
-    except:
+    except Exception:
         exact_integral = None
         error = None
     
@@ -1623,6 +1999,11 @@ async def numerical_integration(req: IntegrationRequest):
         "exact_integral": round(exact_integral, 10) if exact_integral is not None else None,
         "error": round(error, 10) if error is not None else None,
         "truncation_error": round(float(truncation_error), 10) if truncation_error is not None else None,
+        "truncation_derivative_order": truncation_derivative_order,
+        "truncation_derivative_latex": truncation_derivative_latex,
+        "truncation_derivative_bound": round(float(truncation_derivative_bound), 10) if truncation_derivative_bound is not None else None,
+        "truncation_point_used": round(float(truncation_point_used), 10) if truncation_point_used is not None else None,
+        "truncation_derivative_value_at_point": round(float(truncation_derivative_value_at_point), 10) if truncation_derivative_value_at_point is not None else None,
         "f_expr_latex": sp.latex(f_expr) if f_expr is not None else None,
         "source": "table" if from_table else "function"
     }
@@ -1782,6 +2163,28 @@ async def analytical_solver(req: AnalyticalSolverRequest):
 
         steps, result_expr = build_derivative_steps(expr, variable, order)
         input_latex = rf"\frac{{d^{order}}}{{d{sp.latex(variable)}^{order}}}\left({sp.latex(expr)}\right)" if order > 1 else rf"\frac{{d}}{{d{sp.latex(variable)}}}\left({sp.latex(expr)}\right)"
+        metadata = None
+
+        if req.evaluation_point is not None:
+            try:
+                point_exact, evaluated_expr, evaluated_numeric = evaluate_symbolic_expression_at_point(
+                    result_expr, variable, req.evaluation_point
+                )
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=f"No se pudo evaluar la derivada en el punto indicado: {str(e)}")
+
+            steps.append(
+                {
+                    "title": f"{len(steps)+1}) Evaluacion en un punto",
+                    "description": f"Se reemplaza {sp.latex(variable)} por el valor pedido para obtener la derivada en ese punto.",
+                    "latex": rf"{sp.latex(result_expr)}\Big|_{{{sp.latex(variable)}={sp.latex(point_exact)}}} = {sp.latex(evaluated_expr)} \approx {sp.latex(sp.N(evaluated_numeric, 12))}",
+                }
+            )
+            metadata = {
+                "evaluation_point": float(req.evaluation_point),
+                "evaluation_value": float(evaluated_numeric),
+                "evaluation_latex": sp.latex(evaluated_expr),
+            }
 
         return {
             "available": True,
@@ -1790,34 +2193,49 @@ async def analytical_solver(req: AnalyticalSolverRequest):
             "result_latex": sp.latex(result_expr),
             "message": None,
             "steps": steps,
-            "metadata": None,
+            "metadata": metadata,
         }
 
     if req.problem_type == "integral":
         if not req.function:
             raise HTTPException(status_code=400, detail="Function is required for integral problems")
 
-        dimension = int(req.integral_dimension or 1)
-        variables = (x, y, z)[:dimension]
-        expr = parse_general_expression(req.function, variables)
-        bounds_array = normalize_bounds(req.bounds or [], dimension)
+        is_definite = bool(req.integral_definite if req.integral_definite is not None else True)
+        variable_name = req.variable or "x"
+        variable_map = {"x": x, "y": y, "z": z}
 
-        try:
-            steps, result_expr = build_integral_steps(expr, variables, bounds_array)
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Could not solve the integral analytically: {str(e)}")
+        if is_definite:
+            dimension = int(req.integral_dimension or 1)
+            variables = (x, y, z)[:dimension]
+            expr = parse_general_expression(req.function, variables)
+            bounds_array = normalize_bounds(req.bounds or [], dimension)
 
-        input_latex = sp.latex(expr)
-        for idx in reversed(range(len(variables))):
-            low, high = bounds_array[idx]
-            input_latex = rf"\int_{{{sp.latex(sp.nsimplify(low))}}}^{{{sp.latex(sp.nsimplify(high))}}} {input_latex}\, d{sp.latex(variables[idx])}"
+            try:
+                steps, result_expr, exact_found, message = build_integral_steps(expr, variables, bounds_array)
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=f"Could not solve the integral analytically: {str(e)}")
+
+            input_latex = sp.latex(expr)
+            for idx in reversed(range(len(variables))):
+                low, high = bounds_array[idx]
+                input_latex = rf"\int_{{{sp.latex(sp.nsimplify(low))}}}^{{{sp.latex(sp.nsimplify(high))}}} {input_latex}\, d{sp.latex(variables[idx])}"
+        else:
+            variable = variable_map[variable_name]
+            expr = parse_general_expression(req.function, (x, y, z))
+            try:
+                steps, result_expr = build_indefinite_integral_steps(expr, variable)
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=f"Could not solve the integral analytically: {str(e)}")
+
+            input_latex = rf"\int {sp.latex(expr)}\, d{sp.latex(variable)}"
+            message = None
 
         return {
             "available": True,
             "problem_type": req.problem_type,
             "input_latex": input_latex,
             "result_latex": sp.latex(result_expr),
-            "message": None,
+            "message": message,
             "steps": steps,
             "metadata": None,
         }
@@ -1856,54 +2274,15 @@ async def analytical_solver(req: AnalyticalSolverRequest):
             "metadata": None,
         }
 
-    solution_eq = solution_data["solution_eq"]
-    solution_rhs = solution_data["solution_rhs"]
-    hint = solution_data["hint"]
-
-    steps = [
-        {
-            "title": "1) Planteo del problema",
-            "description": "Se escribe la ecuacion diferencial en la forma y' = f(x,y).",
-            "latex": input_latex,
-        },
-        {
-            "title": "2) Clasificacion automatica",
-            "description": f"Se reconoce una estrategia simbolica de resolucion ({hint or 'automatica'}).",
-            "latex": None,
-        },
-        {
-            "title": "3) Resolucion de la ecuacion",
-            "description": "Se aplica el solucionador simbolico para obtener la solucion general o particular.",
-            "latex": sp.latex(solution_eq),
-        },
-    ]
-
-    if req.x0 is not None and req.y0 is not None:
-        steps.append(
-            {
-                "title": "4) Aplicacion de la condicion inicial",
-                "description": "Se usa el dato inicial para fijar la constante de integracion.",
-                "latex": rf"y({sp.latex(sp.nsimplify(req.x0))}) = {sp.latex(sp.nsimplify(req.y0))}",
-            }
-        )
-
-    steps.append(
-        {
-            "title": f"{len(steps)+1}) Despeje de y(x)",
-            "description": "Se expresa la solucion final en forma explicita cuando es posible.",
-            "latex": rf"y(x) = {sp.latex(solution_rhs)}",
-        }
-    )
-
     return {
         "available": True,
         "problem_type": req.problem_type,
         "input_latex": input_latex,
-        "result_latex": sp.latex(solution_rhs),
+        "result_latex": sp.latex(solution_data["solution_rhs"]),
         "message": None,
-        "steps": steps,
+        "steps": solution_data["steps"],
         "metadata": {
-            "hint": hint,
+            "hint": solution_data["hint"],
             "solved_with_ics": solution_data["solved_with_ics"],
             "satisfies_initial_condition": solution_data["satisfies_initial_condition"],
         },
@@ -2000,6 +2379,21 @@ async def differential_equation(req: DifferentialEquationRequest):
 
         return local_points, local_iterations
 
+    analytic_solution_data = try_symbolic_ode_solution_optional(expr, x_sym, y_sym, req.x0, req.y0)
+    analytic_solution = None
+    if analytic_solution_data is not None:
+        solution_rhs = analytic_solution_data["solution_rhs"]
+        analytic_solution = {
+            "available": True,
+            "hint": analytic_solution_data.get("hint"),
+            "solved_with_ics": analytic_solution_data.get("solved_with_ics"),
+            "satisfies_initial_condition": analytic_solution_data.get("satisfies_initial_condition"),
+            "solution_latex": sp.latex(analytic_solution_data["solution_eq"]),
+            "solution_expr_latex": sp.latex(solution_rhs),
+            "solution_expr_plot": analytic_solution_data.get("solution_expr_plot"),
+            "steps": analytic_solution_data.get("steps", []),
+        }
+
     points_forward, iterations_forward = integrate_direction(
         req.x0, req.y0, req.x_max, 1.0, "forward"
     )
@@ -2013,8 +2407,6 @@ async def differential_equation(req: DifferentialEquationRequest):
     all_iterations.sort(key=lambda item: (item["x_next"], item["direction"]))
     for idx, item in enumerate(all_iterations, start=1):
         item["iteration"] = idx
-
-    analytic_solution = try_symbolic_ode_solution(expr, x_sym, y_sym, req.x0, req.y0)
 
     return {
         "equation": req.equation,

@@ -19,12 +19,14 @@ interface MathGraphProps {
     color?: string;
     label?: string;
     opacity?: number;
+    sampleCount?: number;
   }>;
   points?: Array<{
     x: number;
     y: number;
     color?: string;
     label?: string;
+    emphasis?: "normal" | "strong";
   }>;
   lines?: Array<{
     point: [number, number];
@@ -148,10 +150,12 @@ export function MathGraph({
 
     functions.forEach((fn, fnIndex) => {
       const color = fn.color || defaultColors[fnIndex % defaultColors.length];
+      const localSampleCount = Math.max(100, Math.floor(fn.sampleCount ?? sampleCount));
+      const localDx = (maxX - minX) / localSampleCount;
 
-      for (let i = 0; i < sampleCount; i++) {
-        const x1 = minX + i * dx;
-        const x2 = x1 + dx;
+      for (let i = 0; i < localSampleCount; i++) {
+        const x1 = minX + i * localDx;
+        const x2 = x1 + localDx;
 
         let y1 = NaN;
         let y2 = NaN;
@@ -290,17 +294,6 @@ export function MathGraph({
           );
         })}
 
-        {/* Render functions as segments so invalid/extreme values only cut local pieces */}
-        {plottedFunctionSegments.map((segment) => (
-          <Line.Segment
-            key={segment.key}
-            point1={segment.point1}
-            point2={segment.point2}
-            color={segment.color}
-            opacity={segment.opacity}
-          />
-        ))}
-
         {/* Render tangent lines */}
         {lines.map((line, i) => (
           <Line.ThroughPoints
@@ -326,14 +319,33 @@ export function MathGraph({
           />
         ))}
 
+        {/* Render functions after the piecewise segments so reference curves remain visible */}
+        {plottedFunctionSegments.map((segment) => (
+          <Line.Segment
+            key={segment.key}
+            point1={segment.point1}
+            point2={segment.point2}
+            color={segment.color}
+            opacity={segment.opacity}
+          />
+        ))}
+
         {/* Render points */}
         {points.map((pt, i) => (
-          <Point
-            key={`pt-${i}`}
-            x={pt.x}
-            y={pt.y}
-            color={pt.color || defaultColors[i % defaultColors.length]}
-          />
+          <React.Fragment key={`pt-${i}`}>
+            {pt.emphasis === "strong" && (
+              <Point
+                x={pt.x}
+                y={pt.y}
+                color="#ffffff"
+              />
+            )}
+            <Point
+              x={pt.x}
+              y={pt.y}
+              color={pt.color || defaultColors[i % defaultColors.length]}
+            />
+          </React.Fragment>
         ))}
 
         {/* y = x line for fixed point iteration */}
