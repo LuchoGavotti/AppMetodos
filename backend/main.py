@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 from typing import Optional, Literal
 import sympy as sp
 import numpy as np
+import multiprocessing as mp
 import re
 
 app = FastAPI(title="Numerical Methods API")
@@ -91,6 +92,87 @@ class DifferentialEquationRequest(BaseModel):
     x_max: float = Field(..., description="Upper x bound")
     h: float = Field(default=0.1, description="Step size")
     method: Literal["euler", "improved_euler", "runge_kutta"] = Field(default="runge_kutta")
+
+def _solve_worker(expr, var, a, b, queue):
+    from sympy import solveset, Interval
+    try:
+        sol = solveset(expr, var, domain=Interval(a, b))
+        queue.put(sol)
+    except Exception:
+        queue.put(None)
+
+
+def find_critical_points(expr, var, a, b, samples=1000, timeout=3):
+    from sympy import FiniteSet, ConditionSet
+
+    critical_points = []
+
+    # --- 1. solveset con timeout ---
+    queue = mp.Queue()
+    p = mp.Process(target=_solve_worker, args=(expr, var, a, b, queue))
+    p.start()
+    p.join(timeout)
+
+    if p.is_alive():
+        p.terminate()
+        p.join()
+        sol = None
+    else:
+        sol = queue.get() if not queue.empty() else None
+
+    # --- 2. Procesar resultado simbólico ---
+    try:
+        if isinstance(sol, FiniteSet):
+            for s in sol:
+                if s.is_real:
+                    val = float(s.evalf())
+                    if a <= val <= b:
+                        critical_points.append(val)
+
+        elif hasattr(sol, "__iter__") and not isinstance(sol, ConditionSet):
+            for s in sol:
+                try:
+                    if s.is_real:
+                        val = float(s.evalf())
+                        if a <= val <= b:
+                            critical_points.append(val)
+                except:
+                    pass
+
+        else:
+            raise Exception("No usable")
+
+    except:
+        critical_points = []
+
+    # --- 3. Fallback numérico ---
+    if not critical_points:
+        f_num = sp.lambdify(var, expr, "numpy")
+        xs = np.linspace(a, b, samples)
+
+        for i in range(len(xs) - 1):
+            try:
+                y1 = f_num(xs[i])
+                y2 = f_num(xs[i+1])
+
+                if (
+                    np.isfinite(y1)
+                    and np.isfinite(y2)
+                    and np.sign(y1) != np.sign(y2)
+                ):
+                    root = sp.nsolve(expr, var, (xs[i] + xs[i+1]) / 2)
+                    root = float(root)
+
+                    if a <= root <= b:
+                        critical_points.append(root)
+
+            except:
+                pass
+
+    # --- 4. Limpiar ---
+    critical_points = sorted(set([round(r, 6) for r in critical_points]))
+
+    return critical_points
 
 
 def parse_function(func_str: str, apply_real_odd_roots: bool = True):
@@ -1024,16 +1106,8 @@ async def lagrange_interpolation(req: InterpolationRequest):
             f_n2 = sp.diff(true_expr, true_x, n + 2)
 
             # ---- MAX de |f^(n+1)(x)| ----
-            try:
-                critical_points_f = sp.solve(f_n2, true_x)
-            except:
-                critical_points_f = sp.nroots(f_n2)
-
-            critical_points_f = [
-                float(p.evalf())
-                for p in critical_points_f
-                if p.is_real and x_min <= float(p.evalf()) <= x_max
-            ]
+            
+            critical_points_f = find_critical_points(f_n2, true_x, x_min, x_max)
 
             # ---- PRODUCTORIA ----
             w_expr = 1
@@ -1042,16 +1116,9 @@ async def lagrange_interpolation(req: InterpolationRequest):
 
             w_prime = sp.diff(w_expr, true_x)
 
-            try:
-                critical_points_w = sp.solve(w_prime, true_x)
-            except:
-                critical_points_w = sp.nroots(w_prime)
+            critical_points_w = find_critical_points(w_prime, true_x, x_min, x_max)
 
-            critical_points_w = [
-                float(p.evalf())
-                for p in critical_points_w
-                if p.is_real and x_min <= float(p.evalf()) <= x_max
-            ]
+
 
             def build_eval_points(points):
                 combined = list(points) + [x_min, x_max]
@@ -1388,6 +1455,7 @@ async def numerical_integration(req: IntegrationRequest):
                 lim_f = float(lim.evalf())
                 if np.isnan(lim_f) or np.isinf(lim_f):
                     raise ValueError("Limit produced invalid value")
+                print(f"Computed one-sided limit at x={val} from direction '{direction}': {lim_f}")
                 return lim_f
             except Exception:
                 side = "right" if direction == "+" else "left"
@@ -1547,13 +1615,7 @@ async def numerical_integration(req: IntegrationRequest):
                 second_derivative = sp.diff(f_expr, x, 2)
                 third_derivative = sp.diff(f_expr, x, 3)
 
-                critical_points = sp.solve(third_derivative, x)
-
-                critical_points = [
-                    float(p.evalf())
-                    for p in critical_points
-                    if p.is_real and a <= float(p.evalf()) <= b
-                ]
+                critical_points = find_critical_points(third_derivative, x, a, b)
 
                 evaluation_points = critical_points + [a, b]
 
@@ -1583,13 +1645,7 @@ async def numerical_integration(req: IntegrationRequest):
                 fourth_derivative = sp.diff(f_expr, x, 4)
                 fifth_derivative = sp.diff(f_expr, x, 5)
 
-                critical_points = sp.solve(fifth_derivative, x)
-
-                critical_points = [
-                    float(p.evalf())
-                    for p in critical_points
-                    if p.is_real and a <= float(p.evalf()) <= b
-                ]
+                critical_points = find_critical_points(fifth_derivative, x, a, b)
 
                 evaluation_points = critical_points + [a, b]
 
@@ -1617,13 +1673,7 @@ async def numerical_integration(req: IntegrationRequest):
                 fourth_derivative = sp.diff(f_expr, x, 4)
                 fifth_derivative = sp.diff(f_expr, x, 5)
 
-                critical_points = sp.solve(fifth_derivative, x)
-
-                critical_points = [
-                    float(p.evalf())
-                    for p in critical_points
-                    if p.is_real and a <= float(p.evalf()) <= b
-                ]
+                critical_points = find_critical_points(fifth_derivative, x, a, b)
 
                 evaluation_points = critical_points + [a, b]
 
